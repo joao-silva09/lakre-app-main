@@ -19,6 +19,7 @@ import 'package:pigma/flutter_flow/flutter_flow_util.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geolocator_android/geolocator_android.dart';
 import 'package:geolocator_apple/geolocator_apple.dart';
+import 'package:intl/date_symbol_data_local.dart';
 
 class BackgroundLocationService {
   static BackgroundLocationService? _instance;
@@ -210,18 +211,19 @@ class BackgroundLocationService {
         debugPrint(
             '📍 Localização obtida com Geolocator: Lat=${position.latitude}, Lng=${position.longitude}');
 
-        // Converter Position para LocationData para compatibilidade com código existente
+        // Converter Position para LocationData para compatibilidade com código existente - com conversões adequadas de tipo
         return LocationData.fromMap({
           'latitude': position.latitude,
           'longitude': position.longitude,
-          'accuracy': position.accuracy,
+          'accuracy': position.accuracy.toDouble(),
           'altitude': position.altitude,
           'speed': position.speed,
-          'speed_accuracy': position.speedAccuracy,
+          'speed_accuracy': position.speedAccuracy.toDouble(),
           'heading': position.heading,
-          'time': position.timestamp?.millisecondsSinceEpoch ??
-              DateTime.now().millisecondsSinceEpoch,
-          'is_mocked': false,
+          'time': (position.timestamp?.millisecondsSinceEpoch ??
+                  DateTime.now().millisecondsSinceEpoch)
+              .toDouble(),
+          'is_mocked': position.isMocked ? 1.0 : 0.0,
         });
       } catch (directError) {
         debugPrint('⚠️ ERRO ao obter localização com Geolocator: $directError');
@@ -234,18 +236,19 @@ class BackgroundLocationService {
             debugPrint(
                 '📍 Última localização conhecida: Lat=${lastPosition.latitude}, Lng=${lastPosition.longitude}');
 
-            // Converter para LocationData
+            // Converter para LocationData com conversões adequadas de tipo
             return LocationData.fromMap({
               'latitude': lastPosition.latitude,
               'longitude': lastPosition.longitude,
-              'accuracy': lastPosition.accuracy,
+              'accuracy': lastPosition.accuracy.toDouble(),
               'altitude': lastPosition.altitude,
               'speed': lastPosition.speed,
-              'speed_accuracy': lastPosition.speedAccuracy,
+              'speed_accuracy': lastPosition.speedAccuracy.toDouble(),
               'heading': lastPosition.heading,
-              'time': lastPosition.timestamp?.millisecondsSinceEpoch ??
-                  DateTime.now().millisecondsSinceEpoch,
-              'is_mocked': false,
+              'time': (lastPosition.timestamp?.millisecondsSinceEpoch ??
+                      DateTime.now().millisecondsSinceEpoch)
+                  .toDouble(),
+              'is_mocked': lastPosition.isMocked ? 1.0 : 0.0,
             });
           }
         } catch (lastPosError) {
@@ -270,8 +273,8 @@ class BackgroundLocationService {
             'speed': 0.0,
             'speed_accuracy': 0.0,
             'heading': 0.0,
-            'time': DateTime.now().millisecondsSinceEpoch,
-            'is_mocked': false,
+            'time': DateTime.now().millisecondsSinceEpoch.toDouble(),
+            'is_mocked': 0.0,
           });
         }
 
@@ -287,6 +290,11 @@ class BackgroundLocationService {
   static Future<bool> _sendLocationToApi(PositionsStruct position) async {
     try {
       // Preparar payload
+      print("CHEGOU AQUI PARA ENVIAR A LOCALIZACAO NA SERVICE");
+
+      // Inicializar dados de localização para pt_BR (importante!)
+      await initializeDateFormatting('pt_BR', null);
+
       final Map<String, dynamic> payload = {
         'cpf': position.cpf,
         'routeId': position.routeId,
@@ -719,8 +727,13 @@ class BackgroundLocationService {
             return;
           }
 
+          print(
+              "CHEGOU AQUI ANTES DE CHAMAR A LOCALIZACAO NA SERVICE NO ONSTART");
           // Obter localização atual usando o método seguro
           final locationData = await _getLocationSafely();
+
+          print(
+              "CHEGOU AQUI A LOCALIZACAO NA SERVICE NO ONSTART ${locationData?.latitude} ${locationData?.longitude}");
 
           if (locationData == null ||
               locationData.latitude == null ||
@@ -729,6 +742,8 @@ class BackgroundLocationService {
             return;
           }
 
+          print(
+              "MOSTRANDO A LOCALIZACAO NA SERVICE NO ONSTART ${locationData.latitude} ${locationData.longitude}");
           debugPrint(
               '📍 Localização obtida: Latitude=${locationData.latitude}, Longitude=${locationData.longitude}');
           successfulLocationUpdates++;
