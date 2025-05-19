@@ -295,27 +295,50 @@ class BackgroundLocationService {
       // Inicializar dados de localização para pt_BR (importante!)
       await initializeDateFormatting('pt_BR', null);
 
-      final Map<String, dynamic> payload = {
-        'cpf': position.cpf,
-        'routeId': position.routeId,
-        'latitude': position.latitude,
-        'longitude': position.longitude,
-        'isFinished': position.finish,
-        'infoDt': dateTimeFormat(
-          'yyyy-MM-dd HH:mm:ss',
-          position.date,
-          locale: 'pt_BR',
-        ),
+      // URL correta da API
+      const apiUrl =
+          'https://lakre.pigmadesenvolvimentos.com.br:10529/apis/PostPosition';
+
+      // Cabeçalhos necessários conforme documentação
+      Map<String, String> headers = {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'User-Agent': 'com.pigmadesenvolvimentos.lakretracking',
+        'Authorization':
+            'JlEIJjmoLMKtkpxDqOzWAGpkTePDQonu', // API Key dos documentos
       };
 
-      debugPrint('🔄 Enviando dados para API: $payload');
+      // Formatar data no formato correto
+      final formattedDate = dateTimeFormat(
+        'yyyy-MM-dd HH:mm:ss',
+        position.date,
+        locale: 'pt_BR',
+      );
 
-      // Fazer requisição HTTP
+      // Preparar parâmetros no formato x-www-form-urlencoded (não JSON)
+      final Map<String, String> params = {
+        'cpf': position.cpf ?? '',
+        'routeId': (position.routeId ?? 0).toString(),
+        'latitude': (position.latitude ?? 0).toString(),
+        'longitude': (position.longitude ?? 0).toString(),
+        'isFinished': (position.finish ?? false).toString(),
+        'infoDt': formattedDate,
+      };
+
+      debugPrint('🔄 Enviando dados para API: $params');
+      debugPrint('🔄 URL da API: $apiUrl');
+
+      // Codificar parâmetros para x-www-form-urlencoded
+      final encodedParams = params.entries
+          .map((e) =>
+              '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}')
+          .join('&');
+
+      // Fazer requisição HTTP com formato x-www-form-urlencoded
       final response = await http
           .post(
-            Uri.parse(_apiUrl),
-            headers: {'Content-Type': 'application/json'},
-            body: jsonEncode(payload),
+            Uri.parse(apiUrl),
+            headers: headers,
+            body: encodedParams,
           )
           .timeout(const Duration(seconds: 10));
 
@@ -331,6 +354,7 @@ class BackgroundLocationService {
       }
     } catch (e) {
       debugPrint('❌ Exceção ao enviar localização: $e');
+
       return false;
     }
   }
