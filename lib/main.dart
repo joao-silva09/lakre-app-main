@@ -11,6 +11,9 @@ import 'backend/firebase/firebase_config.dart';
 import 'flutter_flow/flutter_flow_util.dart';
 import 'flutter_flow/internationalization.dart';
 
+// Importar o serviço de localização em segundo plano
+import 'package:pigma/services/background_service.dart';
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   usePathUrlStrategy();
@@ -20,6 +23,9 @@ void main() async {
 
   final appState = FFAppState(); // Initialize FFAppState
   await appState.initializePersistedState();
+
+  // Inicializar o serviço de localização em segundo plano
+  await BackgroundLocationService().initialize();
 
   runApp(ChangeNotifierProvider(
     create: (context) => appState,

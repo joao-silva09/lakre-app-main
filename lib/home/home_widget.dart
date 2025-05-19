@@ -20,6 +20,8 @@ export 'home_model.dart';
 import 'package:flutter_mapbox_navigation/flutter_mapbox_navigation.dart';
 import 'package:location/location.dart';
 
+import '../services/background_service.dart';
+
 class HomeWidget extends StatefulWidget {
   const HomeWidget({
     super.key,
@@ -146,7 +148,7 @@ class _HomeWidgetState extends State<HomeWidget> {
         differenceInMinutes = diff.inMinutes;
         differenceInSeconds = diff.inSeconds;
 
-        if (differenceInMinutes >= 5) {
+        if (differenceInMinutes >= 1) {
           if ((latitude != null && longitude != null) &&
               (latitude!.truncate() != 0 && longitude!.truncate() != 0)) {
             savedTime = DateTime.now();
@@ -1128,6 +1130,10 @@ class _HomeWidgetState extends State<HomeWidget> {
                                                                       .routeSelected =
                                                                   RouteStruct();
                                                             });
+
+                                                            await BackgroundLocationService()
+                                                                .stopLocationUpdates();
+
                                                             _model.pegarNovaRota =
                                                                 await APIsPigmanGroup
                                                                     .getNextRouteCall
@@ -1566,6 +1572,18 @@ class _HomeWidgetState extends State<HomeWidget> {
 
                                                                   postRoute(
                                                                       false);
+
+                                                                  await BackgroundLocationService()
+                                                                      .startLocationUpdates(
+                                                                    cpf: FFAppState()
+                                                                        .cpf,
+                                                                    routeId: FFAppState()
+                                                                        .routeSelected
+                                                                        .routeId
+                                                                        .toString(),
+                                                                    finishViagem:
+                                                                        false,
+                                                                  );
                                                                 } else {
                                                                   ScaffoldMessenger.of(
                                                                           context)

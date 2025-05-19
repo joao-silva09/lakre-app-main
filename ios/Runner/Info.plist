@@ -51,19 +51,35 @@
 	<true/>
 	<key>MBXAccessToken</key>
 	<string>sk.eyJ1IjoicGlnbWFkZXNlbnZvbHZpbWVudG9zIiwiYSI6ImNseHcydnZiOTI1bHYya3B6bGdiaGJ6bW8ifQ.vHm3PLJsXu5dG3LG3JXLOA</string>
+	
+	<!-- Permissões de localização -->
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
-	<string>Precisamos da sua localização para fornecer a melhor rota para sua entrega.</string>
+	<string>Precisamos da sua localização para acompanhar seu progresso na rota mesmo quando o aplicativo está fechado.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Precisamos da sua localização para fornecer a melhor rota para sua entrega.</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>Precisamos da sua localização para acompanhar seu progresso na rota mesmo quando o aplicativo está fechado.</string>
+	
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Este app requer acesso às suas fotos para que você possa selecionar imagens para compartilhar</string>
+	
+	<!-- Permissão para notificações -->
+	<key>NSUserNotificationUsageDescription</key>
+	<string>Usamos notificações para informar que o rastreamento de localização está ativo.</string>
+	
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	
+	<!-- Modos de segundo plano -->
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
 		<string>location</string>
+		<string>fetch</string>
+		<string>processing</string>
+		<string>remote-notification</string>
 	</array>
+	
 	<key>UILaunchStoryboardName</key>
 	<string>LaunchScreen</string>
 	<key>UIMainStoryboardFile</key>
@@ -83,5 +99,12 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<false/>
+	
+	<!-- Configuração para o BGTaskScheduler (iOS 13+) -->
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>com.pigmadesenvolvimentos.lakretracking.refresh</string>
+		<string>com.pigmadesenvolvimentos.lakretracking.location</string>
+	</array>
 </dict>
 </plist>
