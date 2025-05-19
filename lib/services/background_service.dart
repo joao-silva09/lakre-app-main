@@ -13,6 +13,7 @@ import 'package:flutter_background_service_ios/flutter_background_service_ios.da
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:location/location.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:http/http.dart' as http;
 import 'package:pigma/backend/schema/structs/positions_struct.dart';
 import 'package:pigma/flutter_flow/flutter_flow_util.dart';
 
@@ -41,26 +42,28 @@ class BackgroundLocationService {
   static const String _prefKeyFinishViagem = 'bg_finish_viagem';
   static const String _prefKeyLastUpdateTimestamp = 'bg_last_update_timestamp';
 
+  // URL da API
+  static const String _apiUrl =
+      'https://api.pigma.com.br/api/v1/position'; // Ajuste para URL correta
+
   Future<void> initialize() async {
     debugPrint('🔷 Inicializando serviço de localização em segundo plano');
 
     // Configurar notificações
     final flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
 
-    if (await flutterLocalNotificationsPlugin
-            .resolvePlatformSpecificImplementation<
-                AndroidFlutterLocalNotificationsPlugin>() !=
-        null) {
-      await flutterLocalNotificationsPlugin
-          .resolvePlatformSpecificImplementation<
-              AndroidFlutterLocalNotificationsPlugin>()
-          ?.createNotificationChannel(const AndroidNotificationChannel(
-            _notificationChannelId,
-            _notificationChannelName,
-            description: _notificationChannelDescription,
-            // Aumentar a importância para HIGH para evitar que o sistema mate o serviço
-            importance: Importance.high,
-          ));
+    final androidImplementation =
+        flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>();
+    if (androidImplementation != null) {
+      await androidImplementation
+          .createNotificationChannel(const AndroidNotificationChannel(
+        _notificationChannelId,
+        _notificationChannelName,
+        description: _notificationChannelDescription,
+        // Aumentar a importância para HIGH para evitar que o sistema mate o serviço
+        importance: Importance.high,
+      ));
 
       debugPrint('🔷 Canal de notificação criado com sucesso');
     }
@@ -107,7 +110,6 @@ class BackgroundLocationService {
     await checkAndRestartTracking();
   }
 
-  // Método para verificar e solicitar permissões
   Future<bool> checkAndRequestPermissions() async {
     final Location location = Location();
 
@@ -153,7 +155,6 @@ class BackgroundLocationService {
     }
   }
 
-  // Este método é chamado para iOS quando o app está em segundo plano
   @pragma('vm:entry-point')
   static Future<bool> _onIosBackground(ServiceInstance service) async {
     debugPrint('🔷 _onIosBackground chamado às ${DateTime.now()}');
@@ -162,7 +163,331 @@ class BackgroundLocationService {
     return true;
   }
 
-  // Este método é o ponto de entrada do serviço em segundo plano
+  static Future<LocationData?> _getLocationSafely() async {
+    try {
+      print("CHEGOU AQUI PARA TENTAR PEGAR A LOCALIZACAO NA SERVICE");
+      // Primeiro tentar obter localização diretamente (funcionará se app estiver aberto)
+      try {
+        final location = Location();
+        await location.enableBackgroundMode(enable: true);
+        final locationData = await location.getLocation();
+
+        // Se chegou aqui, conseguiu obter a localização com sucesso
+        debugPrint(
+            '📍 Localização obtida diretamente: Lat=${locationData.latitude}, Lng=${locationData.longitude}');
+        return locationData;
+      } catch (directError) {
+        debugPrint('⚠️ ERRO ao obter localização diretamente: $directError');
+
+        /*
+        // Se falhou, verificar se temos uma localização armazenada
+        final prefs = await SharedPreferences.getInstance();
+        final lastLatitude = prefs.getDouble('bg_last_latitude');
+        final lastLongitude = prefs.getDouble('bg_last_longitude');
+
+        if (lastLatitude != null && lastLongitude != null) {
+          debugPrint(
+              '📍 Usando última localização conhecida: Lat=$lastLatitude, Lng=$lastLongitude');
+
+          // Criar um objeto LocationData manualmente
+          return LocationData.fromMap({
+            'latitude': lastLatitude,
+            'longitude': lastLongitude,
+            'accuracy': 0.0,
+            'altitude': 0.0,
+            'speed': 0.0,
+            'speed_accuracy': 0.0,
+            'heading': 0.0,
+            'time': DateTime.now().millisecondsSinceEpoch,
+            'is_mocked': false,
+          });
+        } else {
+          debugPrint('⚠️ Nenhuma localização prévia disponível');
+          return null;
+        }
+        */
+      }
+    } catch (e) {
+      debugPrint('❌ Erro ao obter localização com segurança: $e');
+      return null;
+    }
+  }
+
+  static Future<bool> _sendLocationToApi(PositionsStruct position) async {
+    try {
+      // Preparar payload
+      final Map<String, dynamic> payload = {
+        'cpf': position.cpf,
+        'routeId': position.routeId,
+        'latitude': position.latitude,
+        'longitude': position.longitude,
+        'isFinished': position.finish,
+        'infoDt': dateTimeFormat(
+          'yyyy-MM-dd HH:mm:ss',
+          position.date,
+          locale: 'pt_BR',
+        ),
+      };
+
+      debugPrint('🔄 Enviando dados para API: $payload');
+
+      // Fazer requisição HTTP
+      final response = await http
+          .post(
+            Uri.parse(_apiUrl),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(payload),
+          )
+          .timeout(const Duration(seconds: 10));
+
+      // Verificar resposta
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        debugPrint(
+            '✅ Localização enviada com sucesso para a API: ${response.statusCode}');
+        return true;
+      } else {
+        debugPrint(
+            '❌ Erro ao enviar localização: ${response.statusCode} - ${response.body}');
+        return false;
+      }
+    } catch (e) {
+      debugPrint('❌ Exceção ao enviar localização: $e');
+      return false;
+    }
+  }
+
+  static Future<void> _trySyncPendingPositions() async {
+    final prefs = await SharedPreferences.getInstance();
+    List<String> positionsJson = prefs.getStringList('ff_positions') ?? [];
+
+    if (positionsJson.isEmpty) {
+      debugPrint('ℹ️ Sem posições pendentes para sincronizar');
+      return;
+    }
+
+    debugPrint(
+        '🔄 Tentando sincronizar ${positionsJson.length} posições pendentes');
+
+    // Tentar sincronizar até 3 posições por vez (para evitar sobrecarga)
+    int maxToSync = 3;
+    int currentIndex = 0;
+
+    while (currentIndex < positionsJson.length && currentIndex < maxToSync) {
+      try {
+        // Obter a primeira posição da lista
+        final positionJson = positionsJson[0]; // Sempre pegar a primeira
+        final position =
+            PositionsStruct.fromSerializableMap(jsonDecode(positionJson));
+
+        // Tentar enviar para a API
+        final success = await _sendLocationToApi(position);
+
+        if (success) {
+          // Se foi bem sucedido, remover da lista
+          positionsJson.removeAt(0);
+          await prefs.setStringList('ff_positions', positionsJson);
+          debugPrint('✅ Posição pendente sincronizada com sucesso');
+        } else {
+          // Se falhou, interromper tentativas
+          debugPrint(
+              '❌ Falha ao sincronizar posição pendente, tentando novamente depois');
+          break;
+        }
+
+        currentIndex++;
+      } catch (e) {
+        debugPrint('❌ Erro ao processar posição pendente: $e');
+        break;
+      }
+    }
+
+    // Atualizar contagem de posições salvas
+    await prefs.setInt('bg_saved_positions_count', positionsJson.length);
+    debugPrint('ℹ️ Restam ${positionsJson.length} posições pendentes');
+  }
+
+  static Future<void> _savePositionForSync(PositionsStruct position) async {
+    final prefs = await SharedPreferences.getInstance();
+
+    try {
+      // Recuperar lista atual de posições
+      List<String> positionsJson = prefs.getStringList('ff_positions') ?? [];
+
+      // Adicionar nova posição
+      positionsJson.add(position.serialize());
+
+      // Salvar lista atualizada
+      await prefs.setStringList('ff_positions', positionsJson);
+
+      debugPrint(
+          '📊 Posição salva para sincronização posterior. Total: ${positionsJson.length}');
+
+      // Salvar informação adicional para recuperação
+      await prefs.setInt('bg_saved_positions_count', positionsJson.length);
+      await prefs.setInt(
+          'bg_last_save_timestamp', DateTime.now().millisecondsSinceEpoch);
+    } catch (e) {
+      debugPrint('❌ Erro ao salvar posição: $e');
+    }
+  }
+
+  Future<bool> startLocationUpdates({
+    required String cpf,
+    required String routeId,
+    bool finishViagem = false,
+  }) async {
+    debugPrint(
+        '▶️ Solicitação para iniciar rastreamento: CPF=$cpf, RouteId=$routeId, FinishViagem=$finishViagem');
+
+    try {
+      // Verificar permissões antes de iniciar
+      final permissionsGranted = await checkAndRequestPermissions();
+      if (!permissionsGranted) {
+        debugPrint(
+            '❌ Permissões não concedidas, não foi possível iniciar o rastreamento');
+        return false;
+      }
+
+      // Salvar parâmetros
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_prefKeyCpf, cpf);
+      await prefs.setString(_prefKeyRouteId, routeId);
+      await prefs.setBool(_prefKeyFinishViagem, finishViagem);
+      await prefs.setBool(_prefKeyIsTrackingActive, true);
+
+      // Salvar estatísticas iniciais
+      await prefs.setInt(
+          'bg_service_start_timestamp', DateTime.now().millisecondsSinceEpoch);
+      await prefs.setInt('bg_service_successful_updates', 0);
+      await prefs.setInt('bg_service_total_checks', 0);
+      await prefs.setInt('bg_successful_api_sends', 0);
+
+      // Iniciar o serviço
+      final serviceStarted = await _service.startService();
+
+      debugPrint('▶️ Serviço iniciado com sucesso: $serviceStarted');
+
+      return serviceStarted;
+    } catch (e) {
+      debugPrint(
+          '❌ Erro ao iniciar serviço de localização em segundo plano: $e');
+      return false;
+    }
+  }
+
+  Future<bool> stopLocationUpdates() async {
+    debugPrint('⏹️ Solicitação para parar rastreamento');
+
+    try {
+      // Desativar flag de rastreamento
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setBool(_prefKeyIsTrackingActive, false);
+
+      // Salvar estatísticas finais
+      await prefs.setInt(
+          'bg_service_stop_timestamp', DateTime.now().millisecondsSinceEpoch);
+
+      // Tentar parar o serviço diretamente
+      _service.invoke('stopService');
+
+      debugPrint('⏹️ Serviço marcado para parar');
+
+      return true;
+    } catch (e) {
+      debugPrint('❌ Erro ao parar serviço de localização em segundo plano: $e');
+      return false;
+    }
+  }
+
+  Future<void> checkAndRestartTracking() async {
+    debugPrint('🔄 Verificando se o serviço deve ser reiniciado');
+
+    final prefs = await SharedPreferences.getInstance();
+    final isActive = prefs.getBool(_prefKeyIsTrackingActive) ?? false;
+
+    debugPrint('🔄 Rastreamento ativo nas preferências: $isActive');
+
+    if (isActive) {
+      final cpf = prefs.getString(_prefKeyCpf) ?? '';
+      final routeId = prefs.getString(_prefKeyRouteId) ?? '';
+      final finishViagem = prefs.getBool(_prefKeyFinishViagem) ?? false;
+
+      debugPrint(
+          '🔄 Dados da rota: CPF=$cpf, RouteId=$routeId, FinishViagem=$finishViagem');
+
+      if (cpf.isNotEmpty && routeId.isNotEmpty) {
+        final restarted = await startLocationUpdates(
+          cpf: cpf,
+          routeId: routeId,
+          finishViagem: finishViagem,
+        );
+
+        debugPrint('🔄 Rastreamento reiniciado com sucesso: $restarted');
+      } else {
+        debugPrint(
+            '❗ Não foi possível reiniciar rastreamento: dados incompletos');
+      }
+    } else {
+      debugPrint('ℹ️ Não há rastreamento ativo para reiniciar');
+    }
+  }
+
+  Future<bool> isRunning() async {
+    final running = await _service.isRunning();
+    debugPrint('ℹ️ Serviço está rodando: $running');
+    return running;
+  }
+
+  Future<Map<String, dynamic>> getServiceStatistics() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+
+      final startTimestamp = prefs.getInt('bg_service_start_timestamp') ?? 0;
+      final lastUpdateTimestamp =
+          prefs.getInt(_prefKeyLastUpdateTimestamp) ?? 0;
+      final totalChecks = prefs.getInt('bg_service_total_checks') ?? 0;
+      final successfulUpdates =
+          prefs.getInt('bg_service_successful_updates') ?? 0;
+      final successfulApiSends = prefs.getInt('bg_successful_api_sends') ?? 0;
+      final savedPositionsCount = prefs.getInt('bg_saved_positions_count') ?? 0;
+
+      final now = DateTime.now().millisecondsSinceEpoch;
+
+      return {
+        'isRunning': await isRunning(),
+        'startTime': startTimestamp > 0
+            ? DateTime.fromMillisecondsSinceEpoch(startTimestamp)
+            : null,
+        'lastUpdateTime': lastUpdateTimestamp > 0
+            ? DateTime.fromMillisecondsSinceEpoch(lastUpdateTimestamp)
+            : null,
+        'runningTimeMinutes':
+            startTimestamp > 0 ? (now - startTimestamp) ~/ 60000 : 0,
+        'totalChecks': totalChecks,
+        'successfulUpdates': successfulUpdates,
+        'successfulApiSends': successfulApiSends,
+        'successRate': totalChecks > 0
+            ? (successfulUpdates / totalChecks * 100).toStringAsFixed(1) + '%'
+            : '0%',
+        'apiSendRate': successfulUpdates > 0
+            ? (successfulApiSends / successfulUpdates * 100)
+                    .toStringAsFixed(1) +
+                '%'
+            : '0%',
+        'savedPositionsCount': savedPositionsCount,
+        'timeSinceLastUpdateSeconds': lastUpdateTimestamp > 0
+            ? (now - lastUpdateTimestamp) ~/ 1000
+            : null,
+      };
+    } catch (e) {
+      debugPrint('❌ Erro ao obter estatísticas: $e');
+      return {
+        'error': e.toString(),
+        'isRunning': await isRunning(),
+      };
+    }
+  }
+
   @pragma('vm:entry-point')
   static void _onStart(ServiceInstance service) async {
     debugPrint(
@@ -216,9 +541,28 @@ class BackgroundLocationService {
       await location.enableBackgroundMode(enable: true);
       debugPrint('🔵 Modo de segundo plano do location ativado');
 
+      // Tentar obter localização inicial (para armazenar)
+      try {
+        final initialLocation = await location.getLocation();
+        debugPrint(
+            '🔵 Localização inicial obtida: Lat=${initialLocation.latitude}, Lng=${initialLocation.longitude}');
+
+        // Salvar no SharedPreferences para uso posterior
+        final prefs = await SharedPreferences.getInstance();
+        if (initialLocation.latitude != null &&
+            initialLocation.longitude != null) {
+          await prefs.setDouble('bg_last_latitude', initialLocation.latitude!);
+          await prefs.setDouble(
+              'bg_last_longitude', initialLocation.longitude!);
+        }
+      } catch (e) {
+        debugPrint('❌ Erro ao obter localização inicial: $e');
+      }
+
       // Criar timer para verificar periodicidade de forma precisa
       int executionCount = 0;
       int successfulLocationUpdates = 0;
+      int successfulApiSends = 0;
       final startTime = DateTime.now();
 
       // Salvar timestamp de início no SharedPreferences para rastreamento
@@ -230,9 +574,6 @@ class BackgroundLocationService {
       // Nota: definimos como 1 minuto para testes, mas pode ser ajustado para 5 minutos em produção
       Timer.periodic(const Duration(minutes: 1), (timer) async {
         print("ENTROU AQUI A CADA 1 MINUTO NO SERVICE");
-        final locationData = await location.getLocation();
-        print(
-            '🔵 Localização inicial obtida na SERVICE: Latitude=${locationData.latitude}, Longitude=${locationData.longitude}');
         final now = DateTime.now();
         executionCount++;
 
@@ -260,7 +601,7 @@ class BackgroundLocationService {
               await service.setForegroundNotificationInfo(
                 title: 'RotaSys Rastreamento Ativo',
                 content:
-                    'Rastreando desde ${startTime.hour}:${startTime.minute.toString().padLeft(2, '0')} (${executionCount} verificações, ${successfulLocationUpdates} atualizações)',
+                    'Rastreando desde ${startTime.hour}:${startTime.minute.toString().padLeft(2, '0')} (${executionCount} verificações, ${successfulApiSends} enviadas)',
               );
             } else {
               debugPrint(
@@ -306,104 +647,75 @@ class BackgroundLocationService {
             return;
           }
 
-          // Verificar permissões e status do serviço de localização
-          bool locationPermissionOk = true;
+          // Obter localização atual usando o método seguro
+          final locationData = await _getLocationSafely();
 
-          try {
-            final serviceEnabled = await location.serviceEnabled();
-            final permissionStatus = await location.hasPermission();
-
-            debugPrint(
-                '🟢 Status do serviço de localização: Habilitado=$serviceEnabled, Permissão=$permissionStatus');
-
-            if (!serviceEnabled ||
-                permissionStatus != PermissionStatus.granted) {
-              locationPermissionOk = false;
-            }
-          } catch (e) {
-            debugPrint('❌ Erro ao verificar status da localização: $e');
-            locationPermissionOk = false;
-          }
-
-          if (!locationPermissionOk) {
-            debugPrint(
-                '❗ Serviço de localização ou permissões não disponíveis');
-            // Tentar reativar o serviço de localização
-            try {
-              await location.enableBackgroundMode(enable: true);
-            } catch (e) {
-              debugPrint('❌ Não foi possível reativar o serviço: $e');
-            }
+          if (locationData == null ||
+              locationData.latitude == null ||
+              locationData.longitude == null) {
+            debugPrint('❗ Não foi possível obter localização válida');
             return;
           }
 
-          // Obter localização atual
-          try {
-            debugPrint('🟢 Obtendo localização atual...');
-            final locationData = await location.getLocation();
+          debugPrint(
+              '📍 Localização obtida: Latitude=${locationData.latitude}, Longitude=${locationData.longitude}');
+          successfulLocationUpdates++;
 
-            if (locationData.latitude == null ||
-                locationData.longitude == null) {
-              debugPrint('❗ Localização obtida com valores nulos');
-              return;
-            }
+          // Salvar estatísticas de sucesso
+          await prefs.setInt(
+              'bg_service_successful_updates', successfulLocationUpdates);
+          await prefs.setInt('bg_service_total_checks', executionCount);
 
+          // Criar estrutura de posição
+          final DateTime dataHora = DateTime.now();
+          final DateTime dataHoraAjustada = dataHora
+              .subtract(dataHora.timeZoneOffset)
+              .subtract(const Duration(hours: 3));
+
+          final position = PositionsStruct(
+            cpf: cpf,
+            routeId: int.tryParse(routeId),
+            latitude: locationData.latitude,
+            longitude: locationData.longitude,
+            date: dataHoraAjustada,
+            finish: false,
+            finishViagem: finishViagem,
+          );
+
+          // Tentar enviar diretamente para a API
+          final sentSuccessfully = await _sendLocationToApi(position);
+
+          if (sentSuccessfully) {
+            // Se o envio foi bem-sucedido
+            successfulApiSends++;
+            await prefs.setInt('bg_successful_api_sends', successfulApiSends);
             debugPrint(
-                '📍 Localização obtida: Latitude=${locationData.latitude}, Longitude=${locationData.longitude}');
-            successfulLocationUpdates++;
-
-            // Salvar estatísticas de sucesso
-            await prefs.setInt(
-                'bg_service_successful_updates', successfulLocationUpdates);
-            await prefs.setInt('bg_service_total_checks', executionCount);
-
-            // Criar estrutura de posição - CORRIGIDO
-            // Primeiro criar as datas para evitar o erro de expressão void
-            final DateTime dataHora = DateTime.now();
-            final DateTime dataHoraAjustada = dataHora
-                .subtract(dataHora.timeZoneOffset)
-                .subtract(const Duration(hours: 3));
-
-            final position = PositionsStruct(
-              cpf: cpf,
-              routeId: int.tryParse(routeId),
-              latitude: locationData.latitude,
-              longitude: locationData.longitude,
-              date: dataHoraAjustada,
-              finish: false,
-              finishViagem: finishViagem,
-            );
-
-            // Salvar a posição para sincronização posterior
+                '✅ Posição enviada diretamente para API VINDA DA SERVICE');
+          } else {
+            // Se falhou, salvar para sincronização posterior
             await _savePositionForSync(position);
-
-            // Enviar dados para o aplicativo principal - CORRIGIDO
-            // Criar mapa separadamente antes de invocar
-            final Map<String, dynamic> locationUpdateData = {
-              'latitude': locationData.latitude,
-              'longitude': locationData.longitude,
-              'timestamp': DateTime.now().millisecondsSinceEpoch,
-              'routeId': routeId,
-              'cpf': cpf,
-            };
-
-            // Agora, use o mapa na função invoke
-            service.invoke('update_location', locationUpdateData);
-
-            // Salvar última localização para recuperação se o serviço for reiniciado
-            await prefs.setDouble('bg_last_latitude', locationData.latitude!);
-            await prefs.setDouble('bg_last_longitude', locationData.longitude!);
-          } catch (e) {
-            debugPrint('❌ Erro ao obter localização: $e');
-
-            // Tentar reativar o serviço de localização em caso de erro
-            try {
-              await location.enableBackgroundMode(enable: true);
-            } catch (innerError) {
-              debugPrint(
-                  '❌ Erro ao reativar modo em segundo plano: $innerError');
-            }
+            debugPrint(
+                '⚠️ Não foi possível enviar para API, salvando para depois');
           }
+
+          // Tentar sincronizar posições pendentes
+          await _trySyncPendingPositions();
+
+          // Enviar dados para o aplicativo principal (se estiver aberto)
+          final Map<String, dynamic> locationUpdateData = {
+            'latitude': locationData.latitude,
+            'longitude': locationData.longitude,
+            'timestamp': DateTime.now().millisecondsSinceEpoch,
+            'routeId': routeId,
+            'cpf': cpf,
+          };
+
+          // Invocar evento para o app principal (se estiver aberto)
+          service.invoke('update_location', locationUpdateData);
+
+          // Salvar última localização para recuperação se o serviço for reiniciado
+          await prefs.setDouble('bg_last_latitude', locationData.latitude!);
+          await prefs.setDouble('bg_last_longitude', locationData.longitude!);
         } catch (e) {
           debugPrint('❌ Erro no timer principal: $e');
         }
@@ -414,7 +726,7 @@ class BackgroundLocationService {
         debugPrint(
             '🔵 Configurando serviço no Android para evitar que seja encerrado');
 
-        // Registrar receiver para reiniciar o serviço se for encerrado - CORRIGIDO
+        // Registrar receiver para reiniciar o serviço se for encerrado
         service.on('restart').listen((_) async {
           debugPrint('🔄 Recebido comando para reiniciar o serviço');
           // Em vez de chamar service.startService(), use a instância global do serviço
@@ -423,7 +735,6 @@ class BackgroundLocationService {
           await backgroundService.startService();
         });
       }
-
       // Se estivermos no iOS, configurações específicas
       if (Platform.isIOS) {
         debugPrint('🔵 Configurando serviço específico para iOS');
@@ -442,186 +753,6 @@ class BackgroundLocationService {
     } catch (e) {
       debugPrint('💥 Erro fatal no serviço de background: $e');
       service.stopSelf();
-    }
-  }
-
-  // Salvar posição para sincronização posterior
-  static Future<void> _savePositionForSync(PositionsStruct position) async {
-    final prefs = await SharedPreferences.getInstance();
-
-    try {
-      // Recuperar lista atual de posições
-      List<String> positionsJson = prefs.getStringList('ff_positions') ?? [];
-
-      // Adicionar nova posição
-      positionsJson.add(position.serialize());
-
-      // Salvar lista atualizada
-      await prefs.setStringList('ff_positions', positionsJson);
-
-      debugPrint(
-          '📊 Posição salva para sincronização posterior. Total: ${positionsJson.length}');
-
-      // Salvar informação adicional para recuperação
-      await prefs.setInt('bg_saved_positions_count', positionsJson.length);
-      await prefs.setInt(
-          'bg_last_save_timestamp', DateTime.now().millisecondsSinceEpoch);
-    } catch (e) {
-      debugPrint('❌ Erro ao salvar posição: $e');
-    }
-  }
-
-  // Iniciar o serviço de rastreamento
-  Future<bool> startLocationUpdates({
-    required String cpf,
-    required String routeId,
-    bool finishViagem = false,
-  }) async {
-    debugPrint(
-        '▶️ Solicitação para iniciar rastreamento: CPF=$cpf, RouteId=$routeId, FinishViagem=$finishViagem');
-
-    try {
-      // Verificar permissões antes de iniciar
-      final permissionsGranted = await checkAndRequestPermissions();
-      if (!permissionsGranted) {
-        debugPrint(
-            '❌ Permissões não concedidas, não foi possível iniciar o rastreamento');
-        return false;
-      }
-
-      // Salvar parâmetros
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_prefKeyCpf, cpf);
-      await prefs.setString(_prefKeyRouteId, routeId);
-      await prefs.setBool(_prefKeyFinishViagem, finishViagem);
-      await prefs.setBool(_prefKeyIsTrackingActive, true);
-
-      // Salvar estatísticas iniciais
-      await prefs.setInt(
-          'bg_service_start_timestamp', DateTime.now().millisecondsSinceEpoch);
-      await prefs.setInt('bg_service_successful_updates', 0);
-      await prefs.setInt('bg_service_total_checks', 0);
-
-      // Iniciar o serviço
-      final serviceStarted = await _service.startService();
-
-      debugPrint('▶️ Serviço iniciado com sucesso: $serviceStarted');
-
-      return serviceStarted;
-    } catch (e) {
-      debugPrint(
-          '❌ Erro ao iniciar serviço de localização em segundo plano: $e');
-      return false;
-    }
-  }
-
-  // Parar o serviço de rastreamento
-  Future<bool> stopLocationUpdates() async {
-    debugPrint('⏹️ Solicitação para parar rastreamento');
-
-    try {
-      // Desativar flag de rastreamento
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setBool(_prefKeyIsTrackingActive, false);
-
-      // Salvar estatísticas finais
-      await prefs.setInt(
-          'bg_service_stop_timestamp', DateTime.now().millisecondsSinceEpoch);
-
-      // Tentar parar o serviço diretamente
-      _service.invoke('stopService');
-
-      debugPrint('⏹️ Serviço marcado para parar');
-
-      return true;
-    } catch (e) {
-      debugPrint('❌ Erro ao parar serviço de localização em segundo plano: $e');
-      return false;
-    }
-  }
-
-  // Verificar se o serviço deve ser reiniciado
-  Future<void> checkAndRestartTracking() async {
-    debugPrint('🔄 Verificando se o serviço deve ser reiniciado');
-
-    final prefs = await SharedPreferences.getInstance();
-    final isActive = prefs.getBool(_prefKeyIsTrackingActive) ?? false;
-
-    debugPrint('🔄 Rastreamento ativo nas preferências: $isActive');
-
-    if (isActive) {
-      final cpf = prefs.getString(_prefKeyCpf) ?? '';
-      final routeId = prefs.getString(_prefKeyRouteId) ?? '';
-      final finishViagem = prefs.getBool(_prefKeyFinishViagem) ?? false;
-
-      debugPrint(
-          '🔄 Dados da rota: CPF=$cpf, RouteId=$routeId, FinishViagem=$finishViagem');
-
-      if (cpf.isNotEmpty && routeId.isNotEmpty) {
-        final restarted = await startLocationUpdates(
-          cpf: cpf,
-          routeId: routeId,
-          finishViagem: finishViagem,
-        );
-
-        debugPrint('🔄 Rastreamento reiniciado com sucesso: $restarted');
-      } else {
-        debugPrint(
-            '❗ Não foi possível reiniciar rastreamento: dados incompletos');
-      }
-    } else {
-      debugPrint('ℹ️ Não há rastreamento ativo para reiniciar');
-    }
-  }
-
-  // Verificar se o serviço está em execução
-  Future<bool> isRunning() async {
-    final running = await _service.isRunning();
-    debugPrint('ℹ️ Serviço está rodando: $running');
-    return running;
-  }
-
-  // Obter estatísticas do serviço
-  Future<Map<String, dynamic>> getServiceStatistics() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-
-      final startTimestamp = prefs.getInt('bg_service_start_timestamp') ?? 0;
-      final lastUpdateTimestamp =
-          prefs.getInt(_prefKeyLastUpdateTimestamp) ?? 0;
-      final totalChecks = prefs.getInt('bg_service_total_checks') ?? 0;
-      final successfulUpdates =
-          prefs.getInt('bg_service_successful_updates') ?? 0;
-      final savedPositionsCount = prefs.getInt('bg_saved_positions_count') ?? 0;
-
-      final now = DateTime.now().millisecondsSinceEpoch;
-
-      return {
-        'isRunning': await isRunning(),
-        'startTime': startTimestamp > 0
-            ? DateTime.fromMillisecondsSinceEpoch(startTimestamp)
-            : null,
-        'lastUpdateTime': lastUpdateTimestamp > 0
-            ? DateTime.fromMillisecondsSinceEpoch(lastUpdateTimestamp)
-            : null,
-        'runningTimeMinutes':
-            startTimestamp > 0 ? (now - startTimestamp) ~/ 60000 : 0,
-        'totalChecks': totalChecks,
-        'successfulUpdates': successfulUpdates,
-        'successRate': totalChecks > 0
-            ? (successfulUpdates / totalChecks * 100).toStringAsFixed(1) + '%'
-            : '0%',
-        'savedPositionsCount': savedPositionsCount,
-        'timeSinceLastUpdateSeconds': lastUpdateTimestamp > 0
-            ? (now - lastUpdateTimestamp) ~/ 1000
-            : null,
-      };
-    } catch (e) {
-      debugPrint('❌ Erro ao obter estatísticas: $e');
-      return {
-        'error': e.toString(),
-        'isRunning': await isRunning(),
-      };
     }
   }
 }

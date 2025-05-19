@@ -148,8 +148,6 @@ class _HomeWidgetState extends State<HomeWidget> {
 
         if (differenceInMinutes >= 1) {
           _getLocation();
-
-          print("ENTROU AQUI A CADA 1 MINUTO NO HOME");
           if ((latitude != null && longitude != null) &&
               (latitude!.truncate() != 0 && longitude!.truncate() != 0)) {
             savedTime = DateTime.now();
@@ -1886,7 +1884,6 @@ class _HomeWidgetState extends State<HomeWidget> {
   }
 
   Future<void> postRoute(bool finish) async {
-    print("AQUI ENVIO OS DADOS PARA A API");
     if (FFAppState().positions.isNotEmpty
         ? !FFAppState().positions.last.finishViagem
         : true) {
@@ -1910,7 +1907,8 @@ class _HomeWidgetState extends State<HomeWidget> {
               ),
             );
 
-            print("ENVIADO PARA A API AQUI NA HOME");
+            print(
+                "ENVIADO PARA A API AQUI NA HOME: ${FFAppState().positions.first.date}");
 
             if ((_model.enviarLocalizacao1?.succeeded ?? true)) {
               if (FFAppState().positions.isNotEmpty) {
