@@ -212,8 +212,8 @@ class BackgroundLocationService {
       });
 
       // Inicializar Location de forma isolada para evitar vazamentos
-      final Location locationInstance = Location();
-      await locationInstance.enableBackgroundMode(enable: true);
+      final location = Location();
+      await location.enableBackgroundMode(enable: true);
       debugPrint('🔵 Modo de segundo plano do location ativado');
 
       // Criar timer para verificar periodicidade de forma precisa
@@ -229,6 +229,10 @@ class BackgroundLocationService {
       // Configurar timer para coletar a localização a cada 1 minuto
       // Nota: definimos como 1 minuto para testes, mas pode ser ajustado para 5 minutos em produção
       Timer.periodic(const Duration(minutes: 1), (timer) async {
+        print("ENTROU AQUI A CADA 1 MINUTO NO SERVICE");
+        final locationData = await location.getLocation();
+        print(
+            '🔵 Localização inicial obtida na SERVICE: Latitude=${locationData.latitude}, Longitude=${locationData.longitude}');
         final now = DateTime.now();
         executionCount++;
 
@@ -306,8 +310,8 @@ class BackgroundLocationService {
           bool locationPermissionOk = true;
 
           try {
-            final serviceEnabled = await locationInstance.serviceEnabled();
-            final permissionStatus = await locationInstance.hasPermission();
+            final serviceEnabled = await location.serviceEnabled();
+            final permissionStatus = await location.hasPermission();
 
             debugPrint(
                 '🟢 Status do serviço de localização: Habilitado=$serviceEnabled, Permissão=$permissionStatus');
@@ -326,7 +330,7 @@ class BackgroundLocationService {
                 '❗ Serviço de localização ou permissões não disponíveis');
             // Tentar reativar o serviço de localização
             try {
-              await locationInstance.enableBackgroundMode(enable: true);
+              await location.enableBackgroundMode(enable: true);
             } catch (e) {
               debugPrint('❌ Não foi possível reativar o serviço: $e');
             }
@@ -336,7 +340,7 @@ class BackgroundLocationService {
           // Obter localização atual
           try {
             debugPrint('🟢 Obtendo localização atual...');
-            final locationData = await locationInstance.getLocation();
+            final locationData = await location.getLocation();
 
             if (locationData.latitude == null ||
                 locationData.longitude == null) {
@@ -394,7 +398,7 @@ class BackgroundLocationService {
 
             // Tentar reativar o serviço de localização em caso de erro
             try {
-              await locationInstance.enableBackgroundMode(enable: true);
+              await location.enableBackgroundMode(enable: true);
             } catch (innerError) {
               debugPrint(
                   '❌ Erro ao reativar modo em segundo plano: $innerError');

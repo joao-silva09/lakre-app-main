@@ -140,8 +140,6 @@ class _HomeWidgetState extends State<HomeWidget> {
       int differenceInSeconds = 0;
 
       while (FFAppState().routeSelected.hasRouteId()) {
-        _getLocation();
-
         DateTime currentTime = DateTime.now();
 
         Duration diff = currentTime.difference(savedTime!);
@@ -149,6 +147,9 @@ class _HomeWidgetState extends State<HomeWidget> {
         differenceInSeconds = diff.inSeconds;
 
         if (differenceInMinutes >= 1) {
+          _getLocation();
+
+          print("ENTROU AQUI A CADA 1 MINUTO NO HOME");
           if ((latitude != null && longitude != null) &&
               (latitude!.truncate() != 0 && longitude!.truncate() != 0)) {
             savedTime = DateTime.now();
@@ -196,29 +197,9 @@ class _HomeWidgetState extends State<HomeWidget> {
 
   Future<void> _getLocation() async {
     try {
-      // bool serviceEnabled = await location.serviceEnabled();
-
-      // if (!serviceEnabled) {
-      //   serviceEnabled = await location.requestService();
-
-      //   if (!serviceEnabled) {
-      //     hasLocationIssues = true;
-      //   }
-      // }
-
-      // PermissionStatus permissionGranted = await location.hasPermission();
-
-      // if (permissionGranted == PermissionStatus.denied) {
-      //   permissionGranted = await location.requestPermission();
-
-      //   if (permissionGranted != PermissionStatus.granted) {
-      //     hasLocationIssues = true;
-      //   }
-      // }
-
-      // if(!hasLocationIssues)
-      // {
       var currentLocation = await location.getLocation();
+      print(
+          "A PORRA DA LOCALIZAÇÃO NA HOME É: LAT ${currentLocation.latitude}, LON ${currentLocation.longitude}");
 
       setState(() {
         latitude = currentLocation.latitude;
@@ -1905,6 +1886,7 @@ class _HomeWidgetState extends State<HomeWidget> {
   }
 
   Future<void> postRoute(bool finish) async {
+    print("AQUI ENVIO OS DADOS PARA A API");
     if (FFAppState().positions.isNotEmpty
         ? !FFAppState().positions.last.finishViagem
         : true) {
@@ -1927,6 +1909,8 @@ class _HomeWidgetState extends State<HomeWidget> {
                 locale: FFLocalizations.of(context).languageCode,
               ),
             );
+
+            print("ENVIADO PARA A API AQUI NA HOME");
 
             if ((_model.enviarLocalizacao1?.succeeded ?? true)) {
               if (FFAppState().positions.isNotEmpty) {
