@@ -20,6 +20,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:geolocator_android/geolocator_android.dart';
 import 'package:geolocator_apple/geolocator_apple.dart';
 import 'package:intl/date_symbol_data_local.dart';
+import 'package:permission_handler/permission_handler.dart' as permission;
 
 class BackgroundLocationService {
   static BackgroundLocationService? _instance;
@@ -46,33 +47,29 @@ class BackgroundLocationService {
   static const String _prefKeyFinishViagem = 'bg_finish_viagem';
   static const String _prefKeyLastUpdateTimestamp = 'bg_last_update_timestamp';
 
-  // URL da API
-  static const String _apiUrl =
-      'https://api.pigma.com.br/api/v1/position'; // Ajuste para URL correta
-
   Future<void> initialize() async {
     debugPrint('🔷 Inicializando serviço de localização em segundo plano');
 
     // Configurar notificações
     final flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
 
-    final androidImplementation =
-        flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<
-            AndroidFlutterLocalNotificationsPlugin>();
-    if (androidImplementation != null) {
-      await androidImplementation
-          .createNotificationChannel(const AndroidNotificationChannel(
-        _notificationChannelId,
-        _notificationChannelName,
-        description: _notificationChannelDescription,
-        // Aumentar a importância para HIGH para evitar que o sistema mate o serviço
-        importance: Importance.high,
-      ));
-
-      debugPrint('🔷 Canal de notificação criado com sucesso');
+    // Configuração específica para Android
+    if (Platform.isAndroid) {
+      final androidImplementation =
+          flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<
+              AndroidFlutterLocalNotificationsPlugin>();
+      if (androidImplementation != null) {
+        await androidImplementation
+            .createNotificationChannel(const AndroidNotificationChannel(
+          _notificationChannelId,
+          _notificationChannelName,
+          description: _notificationChannelDescription,
+          importance: Importance.high,
+        ));
+      }
     }
 
-    // Inicializar o plugin de notificações locais para iOS
+    // Configuração específica para iOS
     if (Platform.isIOS) {
       await flutterLocalNotificationsPlugin.initialize(
         const InitializationSettings(
@@ -80,10 +77,24 @@ class BackgroundLocationService {
             requestAlertPermission: true,
             requestBadgePermission: true,
             requestSoundPermission: true,
+            requestProvisionalPermission: true, // Importante para iOS
           ),
           android: AndroidInitializationSettings('app_icon'),
         ),
       );
+
+      // Solicitar permissão de notificação no iOS explicitamente
+      final darwinImplementation =
+          flutterLocalNotificationsPlugin.resolvePlatformSpecificImplementation<
+              IOSFlutterLocalNotificationsPlugin>();
+      if (darwinImplementation != null) {
+        await darwinImplementation.requestPermissions(
+          alert: true,
+          badge: true,
+          sound: true,
+          critical: true, // Para alto nível de prioridade no iOS
+        );
+      }
     }
 
     // Configurar serviço em segundo plano
@@ -101,14 +112,12 @@ class BackgroundLocationService {
         autoStart: false,
         onForeground: _onStart,
         onBackground: _onIosBackground,
+        // Importante para atualizações periódicas no iOS
       ),
     );
 
-    debugPrint('🔷 Serviço configurado com sucesso');
-
     // Verificar permissões
     final permissionsGranted = await checkAndRequestPermissions();
-    debugPrint('🔷 Permissões concedidas: $permissionsGranted');
 
     // Verificar se o serviço foi inicializado anteriormente
     await checkAndRestartTracking();
@@ -116,42 +125,65 @@ class BackgroundLocationService {
 
   Future<bool> checkAndRequestPermissions() async {
     try {
-      // Verificar serviço de localização
-      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-      if (!serviceEnabled) {
-        debugPrint('🔶 Serviço de localização não habilitado, solicitando...');
-        // Infelizmente não podemos ativar diretamente, precisamos informar o usuário
-        return false;
-      }
+      if (Platform.isIOS) {
+        // Requisições de permissão específicas para iOS
+        var locationAlways = await permission.Permission.locationAlways.status;
+        if (locationAlways != permission.PermissionStatus.granted) {
+          debugPrint(
+              '🔶 Solicitando permissão de localização sempre ativa no iOS');
 
-      // Verificar permissão
-      LocationPermission permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        debugPrint('🔶 Permissão de localização não concedida, solicitando...');
-        permission = await Geolocator.requestPermission();
+          // Primeiro pedimos a permissão de uso enquanto o app está em uso
+          var locationWhenInUse =
+              await permission.Permission.locationWhenInUse.request();
+          if (locationWhenInUse != permission.PermissionStatus.granted) {
+            debugPrint(
+                '❌ Permissão de localização durante uso não concedida no iOS');
+            return false;
+          }
+
+          // Depois pedimos a permissão de uso em segundo plano ("always")
+          locationAlways = await permission.Permission.locationAlways.request();
+          if (locationAlways != permission.PermissionStatus.granted) {
+            debugPrint(
+                '❌ Permissão de localização em segundo plano não concedida no iOS');
+            return false;
+          }
+        }
+
+        // Verificar também notificações
+        var notification = await permission.Permission.notification.status;
+        if (notification != permission.PermissionStatus.granted) {
+          notification = await permission.Permission.notification.request();
+        }
+
+        debugPrint('🔷 Permissões de localização iOS: $locationAlways');
+      } else {
+        // Código existente para Android
+        bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+        if (!serviceEnabled) {
+          return false;
+        }
+
+        LocationPermission permission = await Geolocator.checkPermission();
         if (permission == LocationPermission.denied) {
-          debugPrint('❌ Permissão de localização negada pelo usuário');
+          permission = await Geolocator.requestPermission();
+          if (permission == LocationPermission.denied) {
+            return false;
+          }
+        }
+
+        if (permission == LocationPermission.deniedForever) {
           return false;
         }
       }
 
-      if (permission == LocationPermission.deniedForever) {
-        debugPrint(
-            '❌ Permissão de localização negada permanentemente pelo usuário');
-        return false;
-      }
-
-      // Verificar e configurar o Location também (para compatibilidade)
+      // Configurar o Location para ambas plataformas
       final Location location = Location();
-
       bool backgroundEnabled = await location.isBackgroundModeEnabled();
       if (!backgroundEnabled) {
-        debugPrint(
-            '🔶 Modo em segundo plano do Location não habilitado, habilitando...');
         backgroundEnabled = await location.enableBackgroundMode(enable: true);
       }
 
-      debugPrint('✅ Todas as permissões concedidas com sucesso');
       return true;
     } catch (e) {
       debugPrint('❌ Erro ao verificar permissões: $e');
@@ -162,125 +194,227 @@ class BackgroundLocationService {
   @pragma('vm:entry-point')
   static Future<bool> _onIosBackground(ServiceInstance service) async {
     debugPrint('🔷 _onIosBackground chamado às ${DateTime.now()}');
+
+    // Necessário para qualquer código que precise do Flutter
     WidgetsFlutterBinding.ensureInitialized();
     DartPluginRegistrant.ensureInitialized();
+
+    // Verificar se o rastreamento está ativo
+    final prefs = await SharedPreferences.getInstance();
+    final isActive = prefs.getBool(_prefKeyIsTrackingActive) ?? false;
+
+    if (isActive) {
+      try {
+        final cpf = prefs.getString(_prefKeyCpf) ?? '';
+        final routeId = prefs.getString(_prefKeyRouteId) ?? '';
+
+        if (cpf.isNotEmpty && routeId.isNotEmpty) {
+          // Obter localização atual
+          final locationData = await _getLocationSafely();
+
+          if (locationData != null &&
+              locationData.latitude != null &&
+              locationData.longitude != null) {
+            // Criar estrutura de posição e salvar
+            final DateTime dataHora = DateTime.now();
+            final DateTime dataHoraAjustada = dataHora
+                .subtract(dataHora.timeZoneOffset)
+                .subtract(const Duration(hours: 3));
+
+            final finishViagem = prefs.getBool(_prefKeyFinishViagem) ?? false;
+
+            final position = PositionsStruct(
+              cpf: cpf,
+              routeId: int.tryParse(routeId),
+              latitude: locationData.latitude,
+              longitude: locationData.longitude,
+              date: dataHoraAjustada,
+              finish: false,
+              finishViagem: finishViagem,
+            );
+
+            // Tentar enviar ou salvar
+            final sent = await _sendLocationToApi(position);
+            if (!sent) {
+              await _savePositionForSync(position);
+            }
+
+            // Atualizar timestamp
+            await prefs.setInt(_prefKeyLastUpdateTimestamp,
+                DateTime.now().millisecondsSinceEpoch);
+          }
+        }
+      } catch (e) {
+        debugPrint('❌ Erro ao processar localização em background iOS: $e');
+      }
+    }
+
+    // É crucial retornar true para o iOS manter o serviço em background
     return true;
   }
 
   static Future<LocationData?> _getLocationSafely() async {
     try {
-      debugPrint("CHEGOU AQUI PARA TENTAR PEGAR A LOCALIZACAO NA SERVICE");
+      debugPrint("🔶 Tentando obter localização no serviço");
 
-      // Tentar obter localização com Geolocator (funciona em background)
-      try {
-        // Configurar settings específicos para a plataforma
-        late LocationSettings locationSettings;
+      // Configurações específicas para iOS para melhorar a confiabilidade
+      if (Platform.isIOS) {
+        try {
+          // No iOS, o Geolocator com configurações específicas para iOS
+          final locationSettings = AppleSettings(
+            activityType: ActivityType
+                .automotiveNavigation, // Melhor para rastreamento de veículos
+            distanceFilter: 0, // Capturar qualquer movimento
+            pauseLocationUpdatesAutomatically:
+                false, // Não pausar automaticamente
+            showBackgroundLocationIndicator:
+                true, // Indicador de localização em background
+            allowBackgroundLocationUpdates:
+                true, // Habilitar atualizações em background
+          );
 
-        if (Platform.isAndroid) {
+          // Obter posição atual
+          final position = await Geolocator.getCurrentPosition(
+            locationSettings: locationSettings,
+          );
+
+          debugPrint(
+              '📍 Localização iOS obtida: Lat=${position.latitude}, Lng=${position.longitude}');
+
+          return LocationData.fromMap({
+            'latitude': position.latitude,
+            'longitude': position.longitude,
+            'accuracy': position.accuracy.toDouble(),
+            'altitude': position.altitude,
+            'speed': position.speed,
+            'speed_accuracy': position.speedAccuracy.toDouble(),
+            'heading': position.heading,
+            'time': (position.timestamp?.millisecondsSinceEpoch ??
+                    DateTime.now().millisecondsSinceEpoch)
+                .toDouble(),
+            'is_mocked': position.isMocked ? 1.0 : 0.0,
+          });
+        } catch (iosError) {
+          debugPrint('⚠️ Erro ao obter localização iOS: $iosError');
+
+          // Tentar obter a última posição conhecida
+          try {
+            final lastPosition = await Geolocator.getLastKnownPosition();
+            if (lastPosition != null) {
+              debugPrint(
+                  '📍 Última localização iOS conhecida: Lat=${lastPosition.latitude}, Lng=${lastPosition.longitude}');
+              return LocationData.fromMap({
+                'latitude': lastPosition.latitude,
+                'longitude': lastPosition.longitude,
+                'accuracy': lastPosition.accuracy.toDouble(),
+                'altitude': lastPosition.altitude,
+                'speed': lastPosition.speed,
+                'speed_accuracy': lastPosition.speedAccuracy.toDouble(),
+                'heading': lastPosition.heading,
+                'time': (lastPosition.timestamp?.millisecondsSinceEpoch ??
+                        DateTime.now().millisecondsSinceEpoch)
+                    .toDouble(),
+                'is_mocked': lastPosition.isMocked ? 1.0 : 0.0,
+              });
+            }
+          } catch (e) {
+            debugPrint('⚠️ Erro ao obter última localização iOS: $e');
+          }
+        }
+      } else {
+        // CÓDIGO ANDROID ORIGINAL - Mantido intacto
+        try {
+          late LocationSettings locationSettings;
+
           locationSettings = AndroidSettings(
               distanceFilter: 0,
-              forceLocationManager:
-                  false, // Usar FusedLocationProviderClient por padrão (mais eficiente)
+              forceLocationManager: false,
               intervalDuration: const Duration(seconds: 5),
-              // Configuração importante para manter o serviço vivo em background
               foregroundNotificationConfig: const ForegroundNotificationConfig(
                 notificationText:
                     "RotaSys continuará rastreando sua localização mesmo em segundo plano",
                 notificationTitle: "RotaSys Ativo",
                 enableWakeLock: true,
               ));
-        } else if (Platform.isIOS) {
-          locationSettings = AppleSettings(
-            activityType: ActivityType.other,
-            distanceFilter: 0,
-            pauseLocationUpdatesAutomatically: false,
-            // Indicador de que o app está usando localização em background
-            showBackgroundLocationIndicator: true,
+
+          // Obter posição atual com as configurações apropriadas
+          final position = await Geolocator.getCurrentPosition(
+            locationSettings: locationSettings,
           );
-        } else {
-          locationSettings = const LocationSettings(
-            distanceFilter: 0,
-          );
-        }
 
-        // Obter posição atual com as configurações apropriadas
-        final position = await Geolocator.getCurrentPosition(
-          locationSettings: locationSettings,
-        );
-
-        debugPrint(
-            '📍 Localização obtida com Geolocator: Lat=${position.latitude}, Lng=${position.longitude}');
-
-        // Converter Position para LocationData para compatibilidade com código existente - com conversões adequadas de tipo
-        return LocationData.fromMap({
-          'latitude': position.latitude,
-          'longitude': position.longitude,
-          'accuracy': position.accuracy.toDouble(),
-          'altitude': position.altitude,
-          'speed': position.speed,
-          'speed_accuracy': position.speedAccuracy.toDouble(),
-          'heading': position.heading,
-          'time': (position.timestamp?.millisecondsSinceEpoch ??
-                  DateTime.now().millisecondsSinceEpoch)
-              .toDouble(),
-          'is_mocked': position.isMocked ? 1.0 : 0.0,
-        });
-      } catch (directError) {
-        debugPrint('⚠️ ERRO ao obter localização com Geolocator: $directError');
-
-        // Tentar obter a última posição conhecida
-        try {
-          final lastPosition = await Geolocator.getLastKnownPosition();
-
-          if (lastPosition != null) {
-            debugPrint(
-                '📍 Última localização conhecida: Lat=${lastPosition.latitude}, Lng=${lastPosition.longitude}');
-
-            // Converter para LocationData com conversões adequadas de tipo
-            return LocationData.fromMap({
-              'latitude': lastPosition.latitude,
-              'longitude': lastPosition.longitude,
-              'accuracy': lastPosition.accuracy.toDouble(),
-              'altitude': lastPosition.altitude,
-              'speed': lastPosition.speed,
-              'speed_accuracy': lastPosition.speedAccuracy.toDouble(),
-              'heading': lastPosition.heading,
-              'time': (lastPosition.timestamp?.millisecondsSinceEpoch ??
-                      DateTime.now().millisecondsSinceEpoch)
-                  .toDouble(),
-              'is_mocked': lastPosition.isMocked ? 1.0 : 0.0,
-            });
-          }
-        } catch (lastPosError) {
           debugPrint(
-              '⚠️ Erro ao obter última localização conhecida: $lastPosError');
-        }
-
-        // Se não conseguiu com Geolocator, buscar do SharedPreferences
-        final prefs = await SharedPreferences.getInstance();
-        final lastLatitude = prefs.getDouble('bg_last_latitude');
-        final lastLongitude = prefs.getDouble('bg_last_longitude');
-
-        if (lastLatitude != null && lastLongitude != null) {
-          debugPrint(
-              '📍 Usando localização armazenada: Lat=$lastLatitude, Lng=$lastLongitude');
+              '📍 Localização obtida com Geolocator: Lat=${position.latitude}, Lng=${position.longitude}');
 
           return LocationData.fromMap({
-            'latitude': lastLatitude,
-            'longitude': lastLongitude,
-            'accuracy': 0.0,
-            'altitude': 0.0,
-            'speed': 0.0,
-            'speed_accuracy': 0.0,
-            'heading': 0.0,
-            'time': DateTime.now().millisecondsSinceEpoch.toDouble(),
-            'is_mocked': 0.0,
+            'latitude': position.latitude,
+            'longitude': position.longitude,
+            'accuracy': position.accuracy.toDouble(),
+            'altitude': position.altitude,
+            'speed': position.speed,
+            'speed_accuracy': position.speedAccuracy.toDouble(),
+            'heading': position.heading,
+            'time': (position.timestamp?.millisecondsSinceEpoch ??
+                    DateTime.now().millisecondsSinceEpoch)
+                .toDouble(),
+            'is_mocked': position.isMocked ? 1.0 : 0.0,
           });
-        }
+        } catch (directError) {
+          debugPrint(
+              '⚠️ ERRO ao obter localização com Geolocator: $directError');
 
-        debugPrint('⚠️ Nenhuma localização disponível');
-        return null;
+          // Tentar obter a última posição conhecida
+          try {
+            final lastPosition = await Geolocator.getLastKnownPosition();
+
+            if (lastPosition != null) {
+              debugPrint(
+                  '📍 Última localização conhecida: Lat=${lastPosition.latitude}, Lng=${lastPosition.longitude}');
+
+              return LocationData.fromMap({
+                'latitude': lastPosition.latitude,
+                'longitude': lastPosition.longitude,
+                'accuracy': lastPosition.accuracy.toDouble(),
+                'altitude': lastPosition.altitude,
+                'speed': lastPosition.speed,
+                'speed_accuracy': lastPosition.speedAccuracy.toDouble(),
+                'heading': lastPosition.heading,
+                'time': (lastPosition.timestamp?.millisecondsSinceEpoch ??
+                        DateTime.now().millisecondsSinceEpoch)
+                    .toDouble(),
+                'is_mocked': lastPosition.isMocked ? 1.0 : 0.0,
+              });
+            }
+          } catch (lastPosError) {
+            debugPrint(
+                '⚠️ Erro ao obter última localização conhecida: $lastPosError');
+          }
+        }
       }
+
+      // Código de fallback existente - Mantido intacto
+      final prefs = await SharedPreferences.getInstance();
+      final lastLatitude = prefs.getDouble('bg_last_latitude');
+      final lastLongitude = prefs.getDouble('bg_last_longitude');
+
+      if (lastLatitude != null && lastLongitude != null) {
+        debugPrint(
+            '📍 Usando localização armazenada: Lat=$lastLatitude, Lng=$lastLongitude');
+
+        return LocationData.fromMap({
+          'latitude': lastLatitude,
+          'longitude': lastLongitude,
+          'accuracy': 0.0,
+          'altitude': 0.0,
+          'speed': 0.0,
+          'speed_accuracy': 0.0,
+          'heading': 0.0,
+          'time': DateTime.now().millisecondsSinceEpoch.toDouble(),
+          'is_mocked': 0.0,
+        });
+      }
+
+      debugPrint('⚠️ Nenhuma localização disponível');
+      return null;
     } catch (e) {
       debugPrint('❌ Erro ao obter localização com segurança: $e');
       return null;
@@ -446,8 +580,7 @@ class BackgroundLocationService {
       // Verificar permissões antes de iniciar
       final permissionsGranted = await checkAndRequestPermissions();
       if (!permissionsGranted) {
-        debugPrint(
-            '❌ Permissões não concedidas, não foi possível iniciar o rastreamento');
+        debugPrint('❌ Permissões não concedidas');
         return false;
       }
 
@@ -458,22 +591,34 @@ class BackgroundLocationService {
       await prefs.setBool(_prefKeyFinishViagem, finishViagem);
       await prefs.setBool(_prefKeyIsTrackingActive, true);
 
-      // Salvar estatísticas iniciais
-      await prefs.setInt(
-          'bg_service_start_timestamp', DateTime.now().millisecondsSinceEpoch);
-      await prefs.setInt('bg_service_successful_updates', 0);
-      await prefs.setInt('bg_service_total_checks', 0);
-      await prefs.setInt('bg_successful_api_sends', 0);
+      // Configurações específicas para iOS antes de iniciar o serviço
+      if (Platform.isIOS) {
+        // Configurar o Location para garantir que está habilitado para segundo plano
+        final Location location = Location();
+        await location.enableBackgroundMode(enable: true);
+
+        // Definir configurações de alta precisão para iOS
+        await location.changeSettings(
+          interval: 5000, // 5 segundos
+          distanceFilter: 0,
+        );
+
+        // Obter localização inicial para "aquecer" o sistema
+        try {
+          final initialLocation = await location.getLocation();
+          debugPrint(
+              '🔷 Localização inicial iOS: ${initialLocation.latitude}, ${initialLocation.longitude}');
+        } catch (e) {
+          debugPrint('⚠️ Erro ao obter localização inicial no iOS: $e');
+        }
+      }
 
       // Iniciar o serviço
       final serviceStarted = await _service.startService();
-
       debugPrint('▶️ Serviço iniciado com sucesso: $serviceStarted');
-
       return serviceStarted;
     } catch (e) {
-      debugPrint(
-          '❌ Erro ao iniciar serviço de localização em segundo plano: $e');
+      debugPrint('❌ Erro ao iniciar serviço: $e');
       return false;
     }
   }
@@ -591,6 +736,45 @@ class BackgroundLocationService {
     }
   }
 
+  Future<void> registerBackgroundTask() async {
+    if (Platform.isIOS) {
+      debugPrint('🔷 Registrando tarefas em segundo plano para iOS');
+
+      try {
+        // Obter permissões de localização em segundo plano explicitamente
+        final location = Location();
+        final hasPermission = await location.hasPermission();
+
+        if (hasPermission == PermissionStatus.denied) {
+          final requestResult = await location.requestPermission();
+          debugPrint('🔷 Permissão de localização solicitada: $requestResult');
+
+          if (requestResult != PermissionStatus.granted &&
+              requestResult != PermissionStatus.grantedLimited) {
+            debugPrint('❌ Permissão de localização negada pelo usuário');
+            return;
+          }
+        }
+
+        // Importante: habilitar o modo de background
+        final backgroundEnabled =
+            await location.enableBackgroundMode(enable: true);
+        debugPrint('🔷 Modo de background habilitado: $backgroundEnabled');
+
+        // Obter uma localização inicial para "aquecer" o sistema de permissões
+        try {
+          final initialLocation = await location.getLocation();
+          debugPrint(
+              '🔷 Localização inicial obtida para registro: ${initialLocation.latitude}, ${initialLocation.longitude}');
+        } catch (e) {
+          debugPrint('⚠️ Erro ao obter localização inicial: $e');
+        }
+      } catch (e) {
+        debugPrint('❌ Erro ao registrar tarefas em segundo plano: $e');
+      }
+    }
+  }
+
   @pragma('vm:entry-point')
   static void _onStart(ServiceInstance service) async {
     debugPrint(
@@ -641,8 +825,20 @@ class BackgroundLocationService {
 
       // Inicializar Location de forma isolada para evitar vazamentos
       final location = Location();
-      await location.enableBackgroundMode(enable: true);
-      debugPrint('🔵 Modo de segundo plano do location ativado');
+
+      // Configurações específicas por plataforma para Location
+      if (Platform.isIOS) {
+        await location.enableBackgroundMode(enable: true);
+        // No iOS, configuramos um accuracy diferente
+        await location.changeSettings(
+          interval: 5000,
+          distanceFilter: 0,
+        );
+        debugPrint('🔵 Location configurado para iOS com alta precisão');
+      } else {
+        await location.enableBackgroundMode(enable: true);
+        debugPrint('🔵 Modo de segundo plano do location ativado para Android');
+      }
 
       // Tentar obter localização inicial (para armazenar)
       try {
@@ -674,10 +870,17 @@ class BackgroundLocationService {
       await prefs.setInt(
           'bg_service_start_timestamp', startTime.millisecondsSinceEpoch);
 
-      // Configurar timer para coletar a localização a cada 1 minuto
-      // Nota: definimos como 1 minuto para testes, mas pode ser ajustado para 5 minutos em produção
-      Timer.periodic(const Duration(minutes: 1), (timer) async {
-        print("ENTROU AQUI A CADA 1 MINUTO NO SERVICE");
+      // Intervalo diferente conforme a plataforma - no iOS respeita o requisito de 5 minutos
+      final updateInterval = Platform.isIOS
+          ? const Duration(
+              minutes: 5) // 5 minutos para iOS (conforme requisito)
+          : const Duration(
+              minutes: 1); // 1 minuto para Android - mantendo como estava
+
+      // Configurar timer para coletar a localização periodicamente
+      Timer.periodic(updateInterval, (timer) async {
+        print(
+            "ENTROU AQUI A CADA ${Platform.isIOS ? '5 MINUTOS' : '1 MINUTO'} NO SERVICE");
         final now = DateTime.now();
         executionCount++;
 
@@ -753,6 +956,7 @@ class BackgroundLocationService {
 
           print(
               "CHEGOU AQUI ANTES DE CHAMAR A LOCALIZACAO NA SERVICE NO ONSTART");
+
           // Obter localização atual usando o método seguro
           final locationData = await _getLocationSafely();
 
@@ -846,6 +1050,7 @@ class BackgroundLocationService {
           await backgroundService.startService();
         });
       }
+
       // Se estivermos no iOS, configurações específicas
       if (Platform.isIOS) {
         debugPrint('🔵 Configurando serviço específico para iOS');
@@ -858,7 +1063,25 @@ class BackgroundLocationService {
           }
 
           debugPrint('🔄 Mantendo serviço iOS ativo');
-          service.invoke('keepAlive', {});
+          service.invoke('keepAlive',
+              {'timestamp': DateTime.now().millisecondsSinceEpoch});
+
+          // Importante: No iOS, devemos solicitar periodicamente a localização
+          // para manter as permissões de background ativas
+          _getLocationSafely().then((location) {
+            if (location != null) {
+              debugPrint(
+                  '📍 Ping de localização iOS: ${location.latitude}, ${location.longitude}');
+            }
+          });
+        });
+
+        // No iOS, também é útil registrar um manipulador para quando o app entrar em background
+        service.on('onBackground').listen((event) async {
+          debugPrint('🔵 Aplicativo entrou em background no iOS');
+          // Garantir que o modo background está habilitado quando o app vai para background
+          final location = Location();
+          await location.enableBackgroundMode(enable: true);
         });
       }
     } catch (e) {

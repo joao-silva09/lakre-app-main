@@ -63,9 +63,15 @@
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>Este app requer acesso às suas fotos para que você possa selecionar imagens para compartilhar</string>
 	
-	<!-- Permissão para notificações -->
+	<!-- Permissões de notificação -->
 	<key>NSUserNotificationUsageDescription</key>
 	<string>Usamos notificações para informar que o rastreamento de localização está ativo.</string>
+	<key>NSNotificationUsageDescription</key>
+	<string>Usamos notificações para informar que o rastreamento de localização está ativo.</string>
+	
+	<!-- Permissão específica para iOS 10+ -->
+	<key>NSCriticalAlertUsageDescription</key>
+	<string>Alertas críticos são usados para notificar sobre eventos importantes da rota.</string>
 	
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
@@ -106,5 +112,12 @@
 		<string>com.pigmadesenvolvimentos.lakretracking.refresh</string>
 		<string>com.pigmadesenvolvimentos.lakretracking.location</string>
 	</array>
+	
+	<!-- Configurações adicionais para localização em segundo plano no iOS -->
+	<key>NSLocationTemporaryUsageDescriptionDictionary</key>
+	<dict>
+		<key>RouteTracking</key>
+		<string>Precisamos de acesso preciso à sua localização temporariamente para rastrear sua rota com precisão</string>
+	</dict>
 </dict>
 </plist>
