@@ -48,8 +48,6 @@ class BackgroundLocationService {
   static const String _prefKeyLastUpdateTimestamp = 'bg_last_update_timestamp';
 
   Future<void> initialize() async {
-    debugPrint('🔷 Inicializando serviço de localização em segundo plano');
-
     // Configurar notificações
     final flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
 
@@ -129,23 +127,16 @@ class BackgroundLocationService {
         // Requisições de permissão específicas para iOS
         var locationAlways = await permission.Permission.locationAlways.status;
         if (locationAlways != permission.PermissionStatus.granted) {
-          debugPrint(
-              '🔶 Solicitando permissão de localização sempre ativa no iOS');
-
           // Primeiro pedimos a permissão de uso enquanto o app está em uso
           var locationWhenInUse =
               await permission.Permission.locationWhenInUse.request();
           if (locationWhenInUse != permission.PermissionStatus.granted) {
-            debugPrint(
-                '❌ Permissão de localização durante uso não concedida no iOS');
             return false;
           }
 
           // Depois pedimos a permissão de uso em segundo plano ("always")
           locationAlways = await permission.Permission.locationAlways.request();
           if (locationAlways != permission.PermissionStatus.granted) {
-            debugPrint(
-                '❌ Permissão de localização em segundo plano não concedida no iOS');
             return false;
           }
         }
@@ -155,8 +146,6 @@ class BackgroundLocationService {
         if (notification != permission.PermissionStatus.granted) {
           notification = await permission.Permission.notification.request();
         }
-
-        debugPrint('🔷 Permissões de localização iOS: $locationAlways');
       } else {
         // Código existente para Android
         bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -186,16 +175,12 @@ class BackgroundLocationService {
 
       return true;
     } catch (e) {
-      debugPrint('❌ Erro ao verificar permissões: $e');
       return false;
     }
   }
 
   @pragma('vm:entry-point')
   static Future<bool> _onIosBackground(ServiceInstance service) async {
-    debugPrint('🔷 _onIosBackground chamado às ${DateTime.now()}');
-
-    // Necessário para qualquer código que precise do Flutter
     WidgetsFlutterBinding.ensureInitialized();
     DartPluginRegistrant.ensureInitialized();
 
@@ -255,8 +240,6 @@ class BackgroundLocationService {
 
   static Future<LocationData?> _getLocationSafely() async {
     try {
-      debugPrint("🔶 Tentando obter localização no serviço");
-
       // Configurações específicas para iOS para melhorar a confiabilidade
       if (Platform.isIOS) {
         try {
@@ -278,9 +261,6 @@ class BackgroundLocationService {
             locationSettings: locationSettings,
           );
 
-          debugPrint(
-              '📍 Localização iOS obtida: Lat=${position.latitude}, Lng=${position.longitude}');
-
           return LocationData.fromMap({
             'latitude': position.latitude,
             'longitude': position.longitude,
@@ -301,8 +281,6 @@ class BackgroundLocationService {
           try {
             final lastPosition = await Geolocator.getLastKnownPosition();
             if (lastPosition != null) {
-              debugPrint(
-                  '📍 Última localização iOS conhecida: Lat=${lastPosition.latitude}, Lng=${lastPosition.longitude}');
               return LocationData.fromMap({
                 'latitude': lastPosition.latitude,
                 'longitude': lastPosition.longitude,
@@ -322,7 +300,6 @@ class BackgroundLocationService {
           }
         }
       } else {
-        // CÓDIGO ANDROID ORIGINAL - Mantido intacto
         try {
           late LocationSettings locationSettings;
 
@@ -342,9 +319,6 @@ class BackgroundLocationService {
             locationSettings: locationSettings,
           );
 
-          debugPrint(
-              '📍 Localização obtida com Geolocator: Lat=${position.latitude}, Lng=${position.longitude}');
-
           return LocationData.fromMap({
             'latitude': position.latitude,
             'longitude': position.longitude,
@@ -359,17 +333,13 @@ class BackgroundLocationService {
             'is_mocked': position.isMocked ? 1.0 : 0.0,
           });
         } catch (directError) {
-          debugPrint(
-              '⚠️ ERRO ao obter localização com Geolocator: $directError');
+          debugPrint('⚠️ ERRO ao obter localização: $directError');
 
           // Tentar obter a última posição conhecida
           try {
             final lastPosition = await Geolocator.getLastKnownPosition();
 
             if (lastPosition != null) {
-              debugPrint(
-                  '📍 Última localização conhecida: Lat=${lastPosition.latitude}, Lng=${lastPosition.longitude}');
-
               return LocationData.fromMap({
                 'latitude': lastPosition.latitude,
                 'longitude': lastPosition.longitude,
@@ -397,9 +367,6 @@ class BackgroundLocationService {
       final lastLongitude = prefs.getDouble('bg_last_longitude');
 
       if (lastLatitude != null && lastLongitude != null) {
-        debugPrint(
-            '📍 Usando localização armazenada: Lat=$lastLatitude, Lng=$lastLongitude');
-
         return LocationData.fromMap({
           'latitude': lastLatitude,
           'longitude': lastLongitude,
@@ -416,20 +383,16 @@ class BackgroundLocationService {
       debugPrint('⚠️ Nenhuma localização disponível');
       return null;
     } catch (e) {
-      debugPrint('❌ Erro ao obter localização com segurança: $e');
+      debugPrint('❌ Erro ao obter localização: $e');
       return null;
     }
   }
 
   static Future<bool> _sendLocationToApi(PositionsStruct position) async {
     try {
-      // Preparar payload
-      print("CHEGOU AQUI PARA ENVIAR A LOCALIZACAO NA SERVICE");
-
-      // Inicializar dados de localização para pt_BR (importante!)
+      // Inicializar dados de localização para pt_BR
       await initializeDateFormatting('pt_BR', null);
 
-      // URL correta da API
       const apiUrl =
           'https://lakre.pigmadesenvolvimentos.com.br:10529/apis/PostPosition';
 
@@ -457,9 +420,6 @@ class BackgroundLocationService {
         'isFinished': (position.finish ?? false).toString(),
         'infoDt': formattedDate,
       };
-
-      debugPrint('🔄 Enviando dados para API: $params');
-      debugPrint('🔄 URL da API: $apiUrl');
 
       // Codificar parâmetros para x-www-form-urlencoded
       final encodedParams = params.entries
@@ -879,8 +839,6 @@ class BackgroundLocationService {
 
       // Configurar timer para coletar a localização periodicamente
       Timer.periodic(updateInterval, (timer) async {
-        print(
-            "ENTROU AQUI A CADA ${Platform.isIOS ? '5 MINUTOS' : '1 MINUTO'} NO SERVICE");
         final now = DateTime.now();
         executionCount++;
 
@@ -954,14 +912,8 @@ class BackgroundLocationService {
             return;
           }
 
-          print(
-              "CHEGOU AQUI ANTES DE CHAMAR A LOCALIZACAO NA SERVICE NO ONSTART");
-
           // Obter localização atual usando o método seguro
           final locationData = await _getLocationSafely();
-
-          print(
-              "CHEGOU AQUI A LOCALIZACAO NA SERVICE NO ONSTART ${locationData?.latitude} ${locationData?.longitude}");
 
           if (locationData == null ||
               locationData.latitude == null ||
@@ -970,8 +922,6 @@ class BackgroundLocationService {
             return;
           }
 
-          print(
-              "MOSTRANDO A LOCALIZACAO NA SERVICE NO ONSTART ${locationData.latitude} ${locationData.longitude}");
           debugPrint(
               '📍 Localização obtida: Latitude=${locationData.latitude}, Longitude=${locationData.longitude}');
           successfulLocationUpdates++;
@@ -1004,8 +954,7 @@ class BackgroundLocationService {
             // Se o envio foi bem-sucedido
             successfulApiSends++;
             await prefs.setInt('bg_successful_api_sends', successfulApiSends);
-            debugPrint(
-                '✅ Posição enviada diretamente para API VINDA DA SERVICE');
+            debugPrint('✅ Posição enviada diretamente para API');
           } else {
             // Se falhou, salvar para sincronização posterior
             await _savePositionForSync(position);

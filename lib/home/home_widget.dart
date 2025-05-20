@@ -149,8 +149,6 @@ class _HomeWidgetState extends State<HomeWidget> {
         if (differenceInMinutes >= 1) {
           _getLocation();
 
-          print("ENTROU AQUI A CADA 1 MINUTO NO HOME");
-
           if ((latitude != null && longitude != null) &&
               (latitude!.truncate() != 0 && longitude!.truncate() != 0)) {
             savedTime = DateTime.now();
@@ -199,8 +197,6 @@ class _HomeWidgetState extends State<HomeWidget> {
   Future<void> _getLocation() async {
     try {
       var currentLocation = await location.getLocation();
-      print(
-          "A PORRA DA LOCALIZAÇÃO NA HOME É: LAT ${currentLocation.latitude}, LON ${currentLocation.longitude}");
 
       setState(() {
         latitude = currentLocation.latitude;
@@ -1909,9 +1905,6 @@ class _HomeWidgetState extends State<HomeWidget> {
                 locale: FFLocalizations.of(context).languageCode,
               ),
             );
-
-            print(
-                "ENVIADO PARA A API AQUI NA HOME: ${FFAppState().positions.first.date}");
 
             if ((_model.enviarLocalizacao1?.succeeded ?? true)) {
               if (FFAppState().positions.isNotEmpty) {
