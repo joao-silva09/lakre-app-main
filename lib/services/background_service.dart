@@ -119,27 +119,18 @@ class BackgroundLocationService {
     // Verificar permissões
     final permissionsGranted = await checkAndRequestPermissions();
 
-    // Verificar se o serviço foi inicializado anteriormente via SharedPreferences
     final firstCheckResult = await checkAndRestartTracking();
 
-    // Se a primeira verificação não encontrou nada, agendar a segunda
     if (!firstCheckResult) {
       Timer(const Duration(seconds: 3), () async {
-        debugPrint('🔄 Executando verificação adicional após 3 segundos');
         final secondCheckResult = await _checkForActiveTripsFromAppState();
 
-        // Se a segunda verificação também não encontrou nada, agendar a terceira
         if (!secondCheckResult) {
           Timer(const Duration(seconds: 57), () async {
-            // 57 segundos para totalizar 1 minuto desde o início
-            debugPrint('🔄 Executando verificação final após 1 minuto');
             final thirdCheckResult = await _checkForActiveTripsFromAppState();
 
-            // NOVO: Se a terceira verificação também não encontrou nada, agendar a quarta (após 5 minutos)
             if (!thirdCheckResult) {
               Timer(const Duration(minutes: 4), () async {
-                // 4 minutos para totalizar 5 minutos desde o início (1 min + 4 min)
-                debugPrint('🔄 Executando verificação extra após 5 minutos');
                 await _checkForActiveTripsFromAppState();
               });
             }
