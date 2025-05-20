@@ -530,9 +530,6 @@ class BackgroundLocationService {
 
   static Future<bool> _sendLocationToApi(PositionsStruct position) async {
     try {
-      // Preparar payload
-      print("CHEGOU AQUI PARA ENVIAR A LOCALIZACAO NA SERVICE");
-
       // Inicializar dados de localização para pt_BR (importante!)
       await initializeDateFormatting('pt_BR', null);
 
@@ -953,8 +950,6 @@ class BackgroundLocationService {
 
       // Configurar timer para coletar a localização periodicamente
       Timer.periodic(updateInterval, (timer) async {
-        print(
-            "ENTROU AQUI A CADA ${Platform.isIOS ? '5 MINUTOS' : '1 MINUTO'} NO SERVICE");
         final now = DateTime.now();
         executionCount++;
 
@@ -982,7 +977,7 @@ class BackgroundLocationService {
               await service.setForegroundNotificationInfo(
                 title: 'RotaSys Rastreamento Ativo',
                 content:
-                    'Rastreando desde ${startTime.hour}:${startTime.minute.toString().padLeft(2, '0')} (${executionCount} verificações, ${successfulApiSends} enviadas)',
+                    'Rastreamento ativo em segundo plano. Atualizando localização...',
               );
             } else {
               debugPrint(
@@ -1028,14 +1023,8 @@ class BackgroundLocationService {
             return;
           }
 
-          print(
-              "CHEGOU AQUI ANTES DE CHAMAR A LOCALIZACAO NA SERVICE NO ONSTART");
-
           // Obter localização atual usando o método seguro
           final locationData = await _getLocationSafely();
-
-          print(
-              "CHEGOU AQUI A LOCALIZACAO NA SERVICE NO ONSTART ${locationData?.latitude} ${locationData?.longitude}");
 
           if (locationData == null ||
               locationData.latitude == null ||
@@ -1044,8 +1033,6 @@ class BackgroundLocationService {
             return;
           }
 
-          print(
-              "MOSTRANDO A LOCALIZACAO NA SERVICE NO ONSTART ${locationData.latitude} ${locationData.longitude}");
           debugPrint(
               '📍 Localização obtida: Latitude=${locationData.latitude}, Longitude=${locationData.longitude}');
           successfulLocationUpdates++;
