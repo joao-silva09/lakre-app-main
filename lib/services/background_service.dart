@@ -119,8 +119,34 @@ class BackgroundLocationService {
     // Verificar permissões
     final permissionsGranted = await checkAndRequestPermissions();
 
-    // Verificar se o serviço foi inicializado anteriormente
-    await checkAndRestartTracking();
+    // Verificar se o serviço foi inicializado anteriormente via SharedPreferences
+    final firstCheckResult = await checkAndRestartTracking();
+
+    // Se a primeira verificação não encontrou nada, agendar a segunda
+    if (!firstCheckResult) {
+      Timer(const Duration(seconds: 3), () async {
+        debugPrint('🔄 Executando verificação adicional após 3 segundos');
+        final secondCheckResult = await _checkForActiveTripsFromAppState();
+
+        // Se a segunda verificação também não encontrou nada, agendar a terceira
+        if (!secondCheckResult) {
+          Timer(const Duration(seconds: 57), () async {
+            // 57 segundos para totalizar 1 minuto desde o início
+            debugPrint('🔄 Executando verificação final após 1 minuto');
+            final thirdCheckResult = await _checkForActiveTripsFromAppState();
+
+            // NOVO: Se a terceira verificação também não encontrou nada, agendar a quarta (após 5 minutos)
+            if (!thirdCheckResult) {
+              Timer(const Duration(minutes: 4), () async {
+                // 4 minutos para totalizar 5 minutos desde o início (1 min + 4 min)
+                debugPrint('🔄 Executando verificação extra após 5 minutos');
+                await _checkForActiveTripsFromAppState();
+              });
+            }
+          });
+        }
+      });
+    }
   }
 
   Future<bool> checkAndRequestPermissions() async {
@@ -251,6 +277,87 @@ class BackgroundLocationService {
 
     // É crucial retornar true para o iOS manter o serviço em background
     return true;
+  }
+
+  // Modificado para retornar se encontrou e iniciou uma viagem
+  Future<bool> checkAndRestartTracking() async {
+    debugPrint('🔄 Verificando se o serviço deve ser reiniciado');
+
+    final prefs = await SharedPreferences.getInstance();
+    final isActive = prefs.getBool(_prefKeyIsTrackingActive) ?? false;
+
+    debugPrint('🔄 Rastreamento ativo nas preferências: $isActive');
+
+    if (isActive) {
+      final cpf = prefs.getString(_prefKeyCpf) ?? '';
+      final routeId = prefs.getString(_prefKeyRouteId) ?? '';
+      final finishViagem = prefs.getBool(_prefKeyFinishViagem) ?? false;
+
+      debugPrint(
+          '🔄 Dados da rota: CPF=$cpf, RouteId=$routeId, FinishViagem=$finishViagem');
+
+      if (cpf.isNotEmpty && routeId.isNotEmpty) {
+        final restarted = await startLocationUpdates(
+          cpf: cpf,
+          routeId: routeId,
+          finishViagem: finishViagem,
+        );
+
+        debugPrint('🔄 Rastreamento reiniciado com sucesso: $restarted');
+        return true; // Encontrou e iniciou uma viagem
+      } else {
+        debugPrint(
+            '❗ Não foi possível reiniciar rastreamento: dados incompletos');
+      }
+    } else {
+      debugPrint('ℹ️ Não há rastreamento ativo para reiniciar');
+    }
+
+    return false; // Não encontrou viagem ativa nas preferências
+  }
+
+  // NOVO MÉTODO: Verificar trips ativas no AppState (retorna se iniciou uma viagem)
+  Future<bool> _checkForActiveTripsFromAppState() async {
+    try {
+      final appState = FFAppState();
+      final isServiceRunning = await isRunning();
+      final prefs = await SharedPreferences.getInstance();
+      final isTrackingActive = prefs.getBool(_prefKeyIsTrackingActive) ?? false;
+
+      debugPrint(
+          '🔄 Verificação agendada: isServiceRunning=$isServiceRunning, isTrackingActive=$isTrackingActive');
+      debugPrint(
+          '🔄 Estado da viagem: hasRouteId=${appState.routeSelected.hasRouteId()}, hasStopId=${appState.stopInProgress.hasStopId()}, viagemFinalizada=${appState.viagemFinalizada}');
+
+      // Se o serviço não estiver ativo mas existe uma viagem em andamento no estado do app
+      if (!isTrackingActive &&
+          !isServiceRunning &&
+          appState.routeSelected.hasRouteId() &&
+          appState.stopInProgress.hasStopId() &&
+          !appState.viagemFinalizada) {
+        debugPrint(
+            '✅ Viagem ativa detectada no AppState que não estava sendo rastreada');
+
+        // Iniciar o rastreamento com base nos dados do AppState
+        final result = await startLocationUpdates(
+          cpf: appState.cpf,
+          routeId: appState.routeSelected.routeId.toString(),
+          finishViagem: false,
+        );
+
+        debugPrint(
+            '✅ Rastreamento iniciado automaticamente para viagem existente: $result');
+        return true; // Encontrou e iniciou uma viagem
+      } else {
+        debugPrint(
+            'ℹ️ Sem viagens ativas para iniciar ou rastreamento já ativo');
+      }
+    } catch (e) {
+      // Apenas registrar o erro sem interromper a inicialização normal
+      debugPrint('⚠️ Erro ao verificar viagem ativa no AppState: $e');
+    }
+
+    return false; // Não encontrou viagem ativa ou falhou ao iniciar
   }
 
   static Future<LocationData?> _getLocationSafely() async {
@@ -644,39 +751,6 @@ class BackgroundLocationService {
     } catch (e) {
       debugPrint('❌ Erro ao parar serviço de localização em segundo plano: $e');
       return false;
-    }
-  }
-
-  Future<void> checkAndRestartTracking() async {
-    debugPrint('🔄 Verificando se o serviço deve ser reiniciado');
-
-    final prefs = await SharedPreferences.getInstance();
-    final isActive = prefs.getBool(_prefKeyIsTrackingActive) ?? false;
-
-    debugPrint('🔄 Rastreamento ativo nas preferências: $isActive');
-
-    if (isActive) {
-      final cpf = prefs.getString(_prefKeyCpf) ?? '';
-      final routeId = prefs.getString(_prefKeyRouteId) ?? '';
-      final finishViagem = prefs.getBool(_prefKeyFinishViagem) ?? false;
-
-      debugPrint(
-          '🔄 Dados da rota: CPF=$cpf, RouteId=$routeId, FinishViagem=$finishViagem');
-
-      if (cpf.isNotEmpty && routeId.isNotEmpty) {
-        final restarted = await startLocationUpdates(
-          cpf: cpf,
-          routeId: routeId,
-          finishViagem: finishViagem,
-        );
-
-        debugPrint('🔄 Rastreamento reiniciado com sucesso: $restarted');
-      } else {
-        debugPrint(
-            '❗ Não foi possível reiniciar rastreamento: dados incompletos');
-      }
-    } else {
-      debugPrint('ℹ️ Não há rastreamento ativo para reiniciar');
     }
   }
 
