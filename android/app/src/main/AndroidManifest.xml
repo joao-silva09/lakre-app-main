@@ -1,16 +1,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.pigmadesenvolvimentos.lakretracking"
     xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Permissões -->
     <uses-permission android:name="android.permission.INTERNET"/>
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
-    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
-    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM"/>
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
 
     <application
@@ -19,6 +21,7 @@
         android:icon="@mipmap/ic_launcher"
         android:requestLegacyExternalStorage="true">
 
+        <!-- Activity principal do Flutter -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
@@ -27,23 +30,12 @@
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
             android:hardwareAccelerated="true"
             android:windowSoftInputMode="adjustResize">
-            <!-- Specifies an Android theme to apply to this Activity as soon as
-                 the Android process has started. This theme is visible to the user
-                 while the Flutter UI initializes. After that, this theme continues
-                 to determine the Window background behind the Flutter UI. -->
             <meta-data
-              android:name="io.flutter.embedding.android.NormalTheme"
-              android:resource="@style/NormalTheme"
-              />
-            <!-- Displays an Android View that continues showing the launch screen
-                 Drawable until Flutter paints its first frame, then this splash
-                 screen fades out. A splash screen is useful to avoid any visual
-                 gap between the end of Android's launch screen and the painting of
-                 Flutter's first frame. -->
+                android:name="io.flutter.embedding.android.NormalTheme"
+                android:resource="@style/NormalTheme"/>
             <meta-data
-              android:name="io.flutter.embedding.android.SplashScreenDrawable"
-              android:resource="@drawable/launch_background"
-              />
+                android:name="io.flutter.embedding.android.SplashScreenDrawable"
+                android:resource="@drawable/launch_background"/>
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
@@ -56,21 +48,27 @@
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="pigma" android:host="pigma.com" />
             </intent-filter>
-
         </activity>
 
+        <!-- Serviço do flutter_background_service -->
+        <service
+            android:name="id.flutter.flutter_background_service.BackgroundService"
+            android:exported="false"
+            tools:replace="android:exported"
+            android:stopWithTask="false"
+            android:foregroundServiceType="location" />
+
+        <!-- Serviço interno do flutter_local_notifications -->
         <service
             android:name="com.dexterous.flutterlocalnotifications.ForegroundService"
             android:exported="false"
-            android:stopWithTask="false"
-        />
+            android:stopWithTask="false" />
 
-        <!-- Adicionado android:exported="false" aos receivers -->
-        <receiver 
-            android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver" 
+        <!-- Receivers do flutter_local_notifications -->
+        <receiver
+            android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationReceiver"
             android:exported="false" />
-        
-        <receiver 
+        <receiver
             android:name="com.dexterous.flutterlocalnotifications.ScheduledNotificationBootReceiver"
             android:exported="false">
             <intent-filter>
@@ -78,15 +76,15 @@
             </intent-filter>
         </receiver>
 
-        <!-- Don't delete the meta-data below.
-             This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
+        <!-- Meta-dados do Flutter -->
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
 
+        <!-- API Key do Google Maps (se aplicável) -->
         <meta-data
             android:name="com.google.android.geo.API_KEY"
-            android:value="AIzaSyCT8L_F8LMBGUtyrTKg5RadrsM4q2c0WIU"
-            />
+            android:value="AIzaSyCT8L_F8LMBGUtyrTKg5RadrsM4q2c0WIU" />
+
     </application>
 </manifest>
