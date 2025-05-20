@@ -1056,8 +1056,6 @@ class BackgroundLocationService {
             // Se o envio foi bem-sucedido
             successfulApiSends++;
             await prefs.setInt('bg_successful_api_sends', successfulApiSends);
-            debugPrint(
-                '✅ Posição enviada diretamente para API VINDA DA SERVICE');
           } else {
             // Se falhou, salvar para sincronização posterior
             await _savePositionForSync(position);
