@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:pigma/backend/schema/structs/positions_struct.dart';
@@ -19,7 +21,7 @@ import 'home_model.dart';
 export 'home_model.dart';
 import 'package:flutter_mapbox_navigation/flutter_mapbox_navigation.dart';
 import 'package:location/location.dart';
-
+import 'package:pigma/services/battery_optimization_service.dart';
 import '../services/background_service.dart';
 
 class HomeWidget extends StatefulWidget {
@@ -55,6 +57,8 @@ class _HomeWidgetState extends State<HomeWidget> {
   final scaffoldKey = GlobalKey<ScaffoldState>();
   LatLng? currentUserLocationValue;
 
+  bool _batteryCheckPerformed = false;
+
   final animationsMap = {
     'containerOnPageLoadAnimation': AnimationInfo(
       loop: true,
@@ -87,6 +91,13 @@ class _HomeWidgetState extends State<HomeWidget> {
     _model = createModel(context, () => HomeModel());
 
     location.enableBackgroundMode(enable: true);
+
+    // Verificar permissões de bateria após a inicialização
+    Timer(const Duration(seconds: 3), () async {
+      if (!_batteryCheckPerformed && mounted) {
+        await _performBatteryCheck();
+      }
+    });
 
     if (FFAppState().latLngDriver != null) {
       latitude = FFAppState().latLngDriver!.latitude;
@@ -234,6 +245,325 @@ class _HomeWidgetState extends State<HomeWidget> {
     return true;
   }
 
+  // Verificar configurações de bateria
+  Future<void> _performBatteryCheck() async {
+    if (!mounted) return;
+
+    _batteryCheckPerformed = true;
+
+    try {
+      final isOptimized =
+          await BatteryOptimizationService.isBatteryOptimizationDisabled();
+
+      if (!isOptimized) {
+        debugPrint('⚠️ Otimização de bateria ativa - mostrando aviso');
+
+        // Mostrar aviso discreto
+        if (mounted) {
+          Timer(const Duration(seconds: 1), () {
+            if (mounted) {
+              _showBatteryOptimizationWarning();
+            }
+          });
+        }
+      } else {
+        debugPrint('✅ Configurações de bateria adequadas');
+      }
+    } catch (e) {
+      debugPrint('⚠️ Erro ao verificar configurações de bateria: $e');
+    }
+  }
+
+  // Mostrar aviso sobre otimização de bateria
+  void _showBatteryOptimizationWarning() {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Row(
+          children: [
+            Icon(Icons.battery_alert, color: Colors.white, size: 20),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Para garantir o funcionamento em segundo plano, configure a otimização de bateria',
+                style: TextStyle(fontSize: 14),
+              ),
+            ),
+          ],
+        ),
+        action: SnackBarAction(
+          label: 'Configurar',
+          textColor: Colors.white,
+          onPressed: () async {
+            await BatteryOptimizationService.checkAndRequestBatteryPermissions(
+                context);
+          },
+        ),
+        duration: const Duration(seconds: 8),
+        backgroundColor: Colors.orange.shade700,
+      ),
+    );
+  }
+
+  // Dialog de configuração de bateria
+  Future<bool> _showBatteryConfigurationDialog() async {
+    return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (BuildContext context) {
+            return AlertDialog(
+              title: const Row(
+                children: [
+                  Icon(Icons.battery_alert, color: Colors.orange),
+                  SizedBox(width: 8),
+                  Text('Configuração Importante'),
+                ],
+              ),
+              content: const SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Para que o rastreamento funcione perfeitamente em segundo plano, '
+                      'é recomendado configurar a otimização de bateria.',
+                      style: TextStyle(fontSize: 16),
+                    ),
+                    SizedBox(height: 16),
+                    Text(
+                      '⚠️ Sem essa configuração, o aplicativo pode parar de rastrear '
+                      'quando estiver em segundo plano.',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.red,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text('Pular por Agora'),
+                ),
+                ElevatedButton(
+                  onPressed: () async {
+                    Navigator.of(context).pop(false);
+
+                    // Solicitar configuração de bateria
+                    final configured = await BatteryOptimizationService
+                        .checkAndRequestBatteryPermissions(context);
+
+                    if (configured && mounted) {
+                      // Se configurou com sucesso, iniciar a viagem automaticamente
+                      Timer(const Duration(seconds: 1), () {
+                        if (mounted) {
+                          _startTrip();
+                        }
+                      });
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF4646B4),
+                    foregroundColor: Colors.white,
+                  ),
+                  child: const Text('Configurar Agora'),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
+  }
+
+  // Iniciar viagem (extraída para reutilização)
+  Future<void> _startTrip() async {
+    try {
+      _model.apiResult7s3 = await APIsPigmanGroup.acceptRouteCall.call(
+        cpf: FFAppState().cpf,
+        routeId: FFAppState().routeSelected.routeId,
+      );
+
+      if ((_model.apiResult7s3?.succeeded ?? true)) {
+        FFAppState().update(() {
+          FFAppState().stopInProgress = FFAppState().routeSelected.stops.first;
+        });
+
+        setState(() {
+          FFAppState().addToPositions(PositionsStruct(
+            cpf: FFAppState().cpf,
+            routeId: FFAppState().routeSelected.routeId,
+            latitude: FFAppState().latLngDriver?.latitude,
+            longitude: FFAppState().latLngDriver?.longitude,
+            date: DateTime.now()
+                .subtract(DateTime.now().timeZoneOffset)
+                .subtract(const Duration(hours: 3)),
+            finish: false,
+          ));
+        });
+
+        postRoute(false);
+
+        // Iniciar o serviço de localização com verificação de bateria
+        await BackgroundLocationService().startLocationUpdates(
+          cpf: FFAppState().cpf,
+          routeId: FFAppState().routeSelected.routeId.toString(),
+          finishViagem: false,
+          context: context,
+        );
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text(
+                'Não foi possível iniciar a viagem, verifique sua conexão com internet e tente novamente.',
+                style: TextStyle(color: Colors.white),
+              ),
+              duration: const Duration(milliseconds: 4000),
+              backgroundColor: FlutterFlowTheme.of(context).error,
+            ),
+          );
+        }
+      }
+      _model.menu = true;
+      setState(() {});
+    } catch (e) {
+      debugPrint('❌ Erro ao iniciar viagem: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text(
+              'Erro ao iniciar viagem. Tente novamente.',
+              style: TextStyle(color: Colors.white),
+            ),
+            backgroundColor: FlutterFlowTheme.of(context).error,
+          ),
+        );
+      }
+    }
+  }
+
+  // Adicionar item no menu superior para verificar status
+  Widget _buildBatteryStatusIndicator() {
+    return FutureBuilder<bool>(
+      future: BatteryOptimizationService.isBatteryOptimizationDisabled(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const SizedBox.shrink();
+        }
+
+        final isOptimized = snapshot.data ?? false;
+
+        return Padding(
+          padding: const EdgeInsets.only(right: 8.0),
+          child: InkWell(
+            splashColor: Colors.transparent,
+            focusColor: Colors.transparent,
+            hoverColor: Colors.transparent,
+            highlightColor: Colors.transparent,
+            onTap: () async {
+              if (!isOptimized) {
+                await BatteryOptimizationService
+                    .checkAndRequestBatteryPermissions(context);
+                setState(() {}); // Rebuild para atualizar o indicador
+              } else {
+                _showBatteryStatusDialog(isOptimized);
+              }
+            },
+            child: Icon(
+              isOptimized ? Icons.battery_full : Icons.battery_alert,
+              color: isOptimized ? Colors.green : Colors.orange,
+              size: 28.0,
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  // Dialog de status da bateria
+  void _showBatteryStatusDialog(bool isOptimized) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Row(
+            children: [
+              Icon(
+                isOptimized ? Icons.battery_full : Icons.battery_alert,
+                color: isOptimized ? Colors.green : Colors.orange,
+              ),
+              const SizedBox(width: 8),
+              const Text('Status da Bateria'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                isOptimized
+                    ? '✅ Configuração adequada para funcionamento em segundo plano'
+                    : '⚠️ Otimização de bateria ativa - pode afetar o funcionamento',
+                style: TextStyle(
+                  fontSize: 16,
+                  color: isOptimized ? Colors.green : Colors.orange,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 16),
+              if (!isOptimized) ...[
+                const Text(
+                  'Para melhor funcionamento, recomendamos configurar:\n'
+                  'Configurações > Aplicativos > RotaSys > Bateria > "Não otimizar"',
+                  style: TextStyle(fontSize: 14),
+                ),
+              ] else ...[
+                const Text(
+                  'O aplicativo está configurado corretamente para funcionar '
+                  'em segundo plano sem interrupções.',
+                  style: TextStyle(fontSize: 14),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            if (!isOptimized) ...[
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Entendi'),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  Navigator.of(context).pop();
+                  await BatteryOptimizationService
+                      .checkAndRequestBatteryPermissions(context);
+                  setState(() {}); // Rebuild para atualizar
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4646B4),
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Configurar'),
+              ),
+            ] else ...[
+              ElevatedButton(
+                onPressed: () => Navigator.of(context).pop(),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green,
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('OK'),
+              ),
+            ],
+          ],
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     context.watch<FFAppState>();
@@ -289,6 +619,7 @@ class _HomeWidgetState extends State<HomeWidget> {
                           child: Row(
                             mainAxisSize: MainAxisSize.max,
                             children: [
+                              _buildBatteryStatusIndicator(),
                               Padding(
                                 padding: const EdgeInsets.only(right: 16.0),
                                 child: InkWell(
@@ -436,7 +767,7 @@ class _HomeWidgetState extends State<HomeWidget> {
                                       key: const Key("mapStatic"),
                                       onCreated: (MapBoxNavigationViewController
                                           controller) async {
-                                        // _controller = controller;
+                                        _controller = controller;
                                         _model.menu = true;
 
                                         // await _getLocation();
@@ -1496,98 +1827,20 @@ class _HomeWidgetState extends State<HomeWidget> {
                                                                   'Iniciar viagem',
                                                               onPressed:
                                                                   () async {
-                                                                _model.apiResult7s3 =
-                                                                    await APIsPigmanGroup
-                                                                        .acceptRouteCall
-                                                                        .call(
-                                                                  cpf:
-                                                                      FFAppState()
-                                                                          .cpf,
-                                                                  routeId: FFAppState()
-                                                                      .routeSelected
-                                                                      .routeId,
-                                                                );
-
-                                                                if ((_model
-                                                                        .apiResult7s3
-                                                                        ?.succeeded ??
-                                                                    true)) {
-                                                                  FFAppState()
-                                                                      .update(
-                                                                          () {
-                                                                    FFAppState()
-                                                                            .stopInProgress =
-                                                                        FFAppState()
-                                                                            .routeSelected
-                                                                            .stops
-                                                                            .first;
-                                                                  });
-
-                                                                  setState(() {
-                                                                    FFAppState()
-                                                                        .addToPositions(
-                                                                            PositionsStruct(
-                                                                      cpf: FFAppState()
-                                                                          .cpf,
-                                                                      routeId: FFAppState()
-                                                                          .routeSelected
-                                                                          .routeId,
-                                                                      latitude: FFAppState()
-                                                                          .latLngDriver
-                                                                          ?.latitude,
-                                                                      longitude: FFAppState()
-                                                                          .latLngDriver
-                                                                          ?.longitude,
-                                                                      date: DateTime.now()
-                                                                          .subtract(DateTime.now()
-                                                                              .timeZoneOffset)
-                                                                          .subtract(
-                                                                              const Duration(hours: 3)),
-                                                                      finish:
-                                                                          false,
-                                                                    ));
-                                                                  });
-
-                                                                  postRoute(
-                                                                      false);
-
-                                                                  await BackgroundLocationService()
-                                                                      .startLocationUpdates(
-                                                                    cpf: FFAppState()
-                                                                        .cpf,
-                                                                    routeId: FFAppState()
-                                                                        .routeSelected
-                                                                        .routeId
-                                                                        .toString(),
-                                                                    finishViagem:
-                                                                        false,
-                                                                  );
-                                                                } else {
-                                                                  ScaffoldMessenger.of(
-                                                                          context)
-                                                                      .showSnackBar(
-                                                                    SnackBar(
-                                                                      content:
-                                                                          const Text(
-                                                                        'Não foi possível iniciar a viagem, verifique sua conexão com internet e tente novamente.',
-                                                                        style:
-                                                                            TextStyle(
-                                                                          color:
-                                                                              Colors.white,
-                                                                        ),
-                                                                      ),
-                                                                      duration: const Duration(
-                                                                          milliseconds:
-                                                                              4000),
-                                                                      backgroundColor:
-                                                                          FlutterFlowTheme.of(context)
-                                                                              .error,
-                                                                    ),
-                                                                  );
+                                                                // Verificar configurações de bateria antes de iniciar a viagem
+                                                                final batteryConfigured =
+                                                                    await BatteryOptimizationService
+                                                                        .isBatteryOptimizationDisabled();
+                                                                if (!batteryConfigured) {
+                                                                  // Mostrar dialog de configuração de bateria
+                                                                  final shouldProceed =
+                                                                      await _showBatteryConfigurationDialog();
+                                                                  if (!shouldProceed) {
+                                                                    return; // Usuário cancelou
+                                                                  }
                                                                 }
-                                                                _model.menu =
-                                                                    true;
-                                                                setState(() {});
+
+                                                                await _startTrip();
                                                               },
                                                               options:
                                                                   FFButtonOptions(

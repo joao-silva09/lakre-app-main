@@ -30,3 +30,6 @@ build/
 # Arquivos e diretórios específicos do SO
 .DS_Store
 Thumbs.db
+
+.flutter-plugins-dependencies
+.flutter-plugins

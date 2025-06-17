@@ -12,6 +12,7 @@ import 'package:flutter_background_service_android/flutter_background_service_an
 import 'package:flutter_background_service_ios/flutter_background_service_ios.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:location/location.dart';
+import 'package:pigma/services/battery_optimization_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:pigma/backend/schema/structs/positions_struct.dart';
@@ -46,6 +47,24 @@ class BackgroundLocationService {
   static const String _prefKeyRouteId = 'bg_routeId';
   static const String _prefKeyFinishViagem = 'bg_finish_viagem';
   static const String _prefKeyLastUpdateTimestamp = 'bg_last_update_timestamp';
+
+  // Verificar e solicitar permissões de bateria
+  Future<bool> checkAndRequestBatteryPermissions(BuildContext context) async {
+    debugPrint('🔋 Verificando permissões de otimização de bateria');
+
+    // Verificar se as permissões de bateria estão configuradas corretamente
+    final batteryPermissionGranted =
+        await BatteryOptimizationService.checkAndRequestBatteryPermissions(
+            context);
+
+    if (!batteryPermissionGranted) {
+      debugPrint('❌ Permissões de bateria não concedidas');
+      return false;
+    }
+
+    debugPrint('✅ Permissões de bateria configuradas corretamente');
+    return true;
+  }
 
   Future<void> initialize() async {
     debugPrint('🔷 Inicializando serviço de localização em segundo plano');
@@ -96,6 +115,22 @@ class BackgroundLocationService {
         );
       }
     }
+
+    // Verificar permissões de bateria (sem bloquear a inicialização)
+    Timer(const Duration(seconds: 2), () async {
+      try {
+        final batteryOptimized =
+            await BatteryOptimizationService.isBatteryOptimizationDisabled();
+        if (!batteryOptimized) {
+          debugPrint(
+              '⚠️ Otimização de bateria está ativa - pode afetar o funcionamento');
+        } else {
+          debugPrint('✅ Otimização de bateria desabilitada');
+        }
+      } catch (e) {
+        debugPrint('⚠️ Erro ao verificar otimização de bateria: $e');
+      }
+    });
 
     // Configurar serviço em segundo plano
     await _service.configure(
@@ -667,6 +702,7 @@ class BackgroundLocationService {
     required String cpf,
     required String routeId,
     bool finishViagem = false,
+    BuildContext? context,
   }) async {
     debugPrint(
         '▶️ Solicitação para iniciar rastreamento: CPF=$cpf, RouteId=$routeId, FinishViagem=$finishViagem');
@@ -677,6 +713,25 @@ class BackgroundLocationService {
       if (!permissionsGranted) {
         debugPrint('❌ Permissões não concedidas');
         return false;
+      }
+
+      // Verificar permissões de bateria se o contexto for fornecido
+      if (context != null) {
+        final batteryPermissionGranted =
+            await checkAndRequestBatteryPermissions(context);
+        if (!batteryPermissionGranted) {
+          debugPrint(
+              '⚠️ Permissões de bateria não concedidas - serviço pode ser interrompido');
+          // Não falhar completamente, mas avisar
+        }
+      } else {
+        // Verificação silenciosa
+        final batteryOptimized =
+            await BatteryOptimizationService.isBatteryOptimizationDisabled();
+        if (!batteryOptimized) {
+          debugPrint(
+              '⚠️ Otimização de bateria ativa - serviço pode ser interrompido pelo sistema');
+        }
       }
 
       // Salvar parâmetros
@@ -715,6 +770,44 @@ class BackgroundLocationService {
     } catch (e) {
       debugPrint('❌ Erro ao iniciar serviço: $e');
       return false;
+    }
+  }
+
+  // Verificar status da bateria periodicamente
+  Future<void> performPeriodicBatteryCheck(BuildContext context) async {
+    Timer.periodic(const Duration(minutes: 30), (timer) async {
+      try {
+        await BatteryOptimizationService.periodicBatteryCheck(context);
+      } catch (e) {
+        debugPrint('⚠️ Erro na verificação periódica de bateria: $e');
+      }
+    });
+  }
+
+  // Obter status detalhado do sistema
+  Future<Map<String, dynamic>> getDetailedSystemStatus() async {
+    final basicStats = await getServiceStatistics();
+
+    try {
+      final batteryOptimized =
+          await BatteryOptimizationService.isBatteryOptimizationDisabled();
+      final canIgnore =
+          await BatteryOptimizationService.canIgnoreBatteryOptimizations();
+
+      return {
+        ...basicStats,
+        'batteryOptimizationDisabled': batteryOptimized,
+        'canIgnoreBatteryOptimizations': canIgnore,
+        'systemRecommendation': batteryOptimized
+            ? 'Sistema configurado corretamente'
+            : 'Recomendado desabilitar otimização de bateria',
+      };
+    } catch (e) {
+      return {
+        ...basicStats,
+        'batteryOptimizationDisabled': 'unknown',
+        'batteryCheckError': e.toString(),
+      };
     }
   }
 
