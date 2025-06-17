@@ -23,6 +23,7 @@ import 'package:flutter_mapbox_navigation/flutter_mapbox_navigation.dart';
 import 'package:location/location.dart';
 import 'package:pigma/services/battery_optimization_service.dart';
 import '../services/background_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class HomeWidget extends StatefulWidget {
   const HomeWidget({
@@ -59,6 +60,8 @@ class _HomeWidgetState extends State<HomeWidget> {
 
   bool _batteryCheckPerformed = false;
 
+  Timer? _heartbeatTimer;
+
   final animationsMap = {
     'containerOnPageLoadAnimation': AnimationInfo(
       loop: true,
@@ -87,6 +90,69 @@ class _HomeWidgetState extends State<HomeWidget> {
 
   @override
   void initState() {
+    super.initState();
+    _model = createModel(context, () => HomeModel());
+
+    location.enableBackgroundMode(enable: true);
+
+    // Verificar permissões de bateria após a inicialização
+    Timer(const Duration(seconds: 5), () async {
+      if (!_batteryCheckPerformed && mounted) {
+        await _performBatteryCheck();
+      }
+    });
+
+    if (FFAppState().latLngDriver != null) {
+      latitude = FFAppState().latLngDriver!.latitude;
+      longitude = FFAppState().latLngDriver!.longitude;
+    }
+
+    locationIssuesSnackBar = SnackBar(
+      content: const Text(
+        'Não foi possível obter a localização do dispositivo. Verifique se o GPS encontra-se ativo e se a permissão de acesso foi concedida.',
+        style: TextStyle(
+          color: Colors.white,
+        ),
+      ),
+      duration: const Duration(milliseconds: 4000),
+      backgroundColor: FlutterFlowTheme.of(context).error,
+    );
+
+    () async {
+      await _getLocation().whenComplete(
+          () => currentUserLocationValue = FFAppState().latLngDriver);
+      setState(() {});
+    }();
+
+    savedTime = DateTime.now();
+
+    MapBoxNavigation.instance.setDefaultOptions(MapBoxOptions(
+      mode: MapBoxNavigationMode.driving,
+      language: "pt-BR",
+      initialLatitude: FFAppState().latLngDriver?.latitude,
+      initialLongitude: FFAppState().latLngDriver?.longitude,
+      voiceInstructionsEnabled: true,
+      bannerInstructionsEnabled: true,
+      units: VoiceUnits.metric,
+      showEndOfRouteFeedback: false,
+      showReportFeedbackButton: false,
+      longPressDestinationEnabled: false,
+    ));
+
+    _navigationOption = MapBoxNavigation.instance.getDefaultOptions();
+    _mapboxNavigation.setDefaultOptions(_navigationOption);
+    _mapboxNavigation.registerRouteEventListener(_onEmbeddedRouteEvent);
+
+    // MODIFICADO: Apenas verificar termos, SEM loop de localização duplicado
+    SchedulerBinding.instance.addPostFrameCallback((_) async {
+      if (!FFAppState().acceptedTermsAndPrivacy) {
+        showConfirmConsentDialog(context);
+      }
+
+      // Configurar heartbeat para coordenar com background service
+      _setupHeartbeat();
+    });
+
     super.initState();
     _model = createModel(context, () => HomeModel());
 
@@ -199,9 +265,8 @@ class _HomeWidgetState extends State<HomeWidget> {
   @override
   void dispose() {
     _controller?.dispose();
-
+    _heartbeatTimer?.cancel();
     _model.dispose();
-
     super.dispose();
   }
 
@@ -413,6 +478,73 @@ class _HomeWidgetState extends State<HomeWidget> {
           finishViagem: false,
           context: context,
         );
+
+        // ADICIONAR ESTA LINHA:
+        _setupHeartbeat(); // Configurar heartbeat após iniciar viagem
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text(
+                'Não foi possível iniciar a viagem, verifique sua conexão com internet e tente novamente.',
+                style: TextStyle(color: Colors.white),
+              ),
+              duration: const Duration(milliseconds: 4000),
+              backgroundColor: FlutterFlowTheme.of(context).error,
+            ),
+          );
+        }
+      }
+      _model.menu = true;
+      setState(() {});
+    } catch (e) {
+      debugPrint('❌ Erro ao iniciar viagem: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text(
+              'Erro ao iniciar viagem. Tente novamente.',
+              style: TextStyle(color: Colors.white),
+            ),
+            backgroundColor: FlutterFlowTheme.of(context).error,
+          ),
+        );
+      }
+    }
+
+    try {
+      _model.apiResult7s3 = await APIsPigmanGroup.acceptRouteCall.call(
+        cpf: FFAppState().cpf,
+        routeId: FFAppState().routeSelected.routeId,
+      );
+
+      if ((_model.apiResult7s3?.succeeded ?? true)) {
+        FFAppState().update(() {
+          FFAppState().stopInProgress = FFAppState().routeSelected.stops.first;
+        });
+
+        setState(() {
+          FFAppState().addToPositions(PositionsStruct(
+            cpf: FFAppState().cpf,
+            routeId: FFAppState().routeSelected.routeId,
+            latitude: FFAppState().latLngDriver?.latitude,
+            longitude: FFAppState().latLngDriver?.longitude,
+            date: DateTime.now()
+                .subtract(DateTime.now().timeZoneOffset)
+                .subtract(const Duration(hours: 3)),
+            finish: false,
+          ));
+        });
+
+        postRoute(false);
+
+        // Iniciar o serviço de localização com verificação de bateria
+        await BackgroundLocationService().startLocationUpdates(
+          cpf: FFAppState().cpf,
+          routeId: FFAppState().routeSelected.routeId.toString(),
+          finishViagem: false,
+          context: context,
+        );
       } else {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
@@ -562,6 +694,37 @@ class _HomeWidgetState extends State<HomeWidget> {
         );
       },
     );
+  }
+
+  // Configurar heartbeat para sinalizar que app está ativo
+  void _setupHeartbeat() async {
+    if (FFAppState().routeSelected.hasRouteId()) {
+      // Sinalizar imediatamente que app está ativo
+      await _updateMainAppHeartbeat();
+
+      // Configurar timer para manter heartbeat
+      _heartbeatTimer?.cancel();
+      _heartbeatTimer =
+          Timer.periodic(const Duration(seconds: 15), (timer) async {
+        if (!mounted || !FFAppState().routeSelected.hasRouteId()) {
+          timer.cancel();
+          return;
+        }
+        await _updateMainAppHeartbeat();
+      });
+    }
+  }
+
+  // Atualizar heartbeat do app principal
+  Future<void> _updateMainAppHeartbeat() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(
+          'main_app_heartbeat', DateTime.now().millisecondsSinceEpoch);
+      debugPrint('🟢 App principal ativo - heartbeat atualizado');
+    } catch (e) {
+      debugPrint('❌ Erro ao atualizar heartbeat: $e');
+    }
   }
 
   @override
