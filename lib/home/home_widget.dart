@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/gestures.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/services.dart';
 import 'package:pigma/backend/schema/structs/positions_struct.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '/backend/api_requests/api_calls.dart';
@@ -20,7 +21,7 @@ import 'package:provider/provider.dart';
 import 'home_model.dart';
 export 'home_model.dart';
 import 'package:flutter_mapbox_navigation/flutter_mapbox_navigation.dart';
-import 'package:location/location.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:pigma/services/battery_optimization_service.dart';
 import '../services/background_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -37,8 +38,6 @@ class HomeWidget extends StatefulWidget {
 
 class _HomeWidgetState extends State<HomeWidget> {
   late SnackBar locationIssuesSnackBar;
-
-  final location = Location();
 
   String companyPhoneNumber = "";
   double? latitude;
@@ -61,6 +60,9 @@ class _HomeWidgetState extends State<HomeWidget> {
   bool _batteryCheckPerformed = false;
 
   Timer? _heartbeatTimer;
+  Timer? _locationTimer;
+
+  final backgroundService = BackgroundLocationService();
 
   final animationsMap = {
     'containerOnPageLoadAnimation': AnimationInfo(
@@ -92,71 +94,6 @@ class _HomeWidgetState extends State<HomeWidget> {
   void initState() {
     super.initState();
     _model = createModel(context, () => HomeModel());
-
-    location.enableBackgroundMode(enable: true);
-
-    // Verificar permissões de bateria após a inicialização
-    Timer(const Duration(seconds: 5), () async {
-      if (!_batteryCheckPerformed && mounted) {
-        await _performBatteryCheck();
-      }
-    });
-
-    if (FFAppState().latLngDriver != null) {
-      latitude = FFAppState().latLngDriver!.latitude;
-      longitude = FFAppState().latLngDriver!.longitude;
-    }
-
-    locationIssuesSnackBar = SnackBar(
-      content: const Text(
-        'Não foi possível obter a localização do dispositivo. Verifique se o GPS encontra-se ativo e se a permissão de acesso foi concedida.',
-        style: TextStyle(
-          color: Colors.white,
-        ),
-      ),
-      duration: const Duration(milliseconds: 4000),
-      backgroundColor: FlutterFlowTheme.of(context).error,
-    );
-
-    () async {
-      await _getLocation().whenComplete(
-          () => currentUserLocationValue = FFAppState().latLngDriver);
-      setState(() {});
-    }();
-
-    savedTime = DateTime.now();
-
-    MapBoxNavigation.instance.setDefaultOptions(MapBoxOptions(
-      mode: MapBoxNavigationMode.driving,
-      language: "pt-BR",
-      initialLatitude: FFAppState().latLngDriver?.latitude,
-      initialLongitude: FFAppState().latLngDriver?.longitude,
-      voiceInstructionsEnabled: true,
-      bannerInstructionsEnabled: true,
-      units: VoiceUnits.metric,
-      showEndOfRouteFeedback: false,
-      showReportFeedbackButton: false,
-      longPressDestinationEnabled: false,
-    ));
-
-    _navigationOption = MapBoxNavigation.instance.getDefaultOptions();
-    _mapboxNavigation.setDefaultOptions(_navigationOption);
-    _mapboxNavigation.registerRouteEventListener(_onEmbeddedRouteEvent);
-
-    // MODIFICADO: Apenas verificar termos, SEM loop de localização duplicado
-    SchedulerBinding.instance.addPostFrameCallback((_) async {
-      if (!FFAppState().acceptedTermsAndPrivacy) {
-        showConfirmConsentDialog(context);
-      }
-
-      // Configurar heartbeat para coordenar com background service
-      _setupHeartbeat();
-    });
-
-    super.initState();
-    _model = createModel(context, () => HomeModel());
-
-    location.enableBackgroundMode(enable: true);
 
     // Verificar permissões de bateria após a inicialização
     Timer(const Duration(seconds: 3), () async {
@@ -190,7 +127,6 @@ class _HomeWidgetState extends State<HomeWidget> {
     savedTime = DateTime.now();
 
     MapBoxNavigation.instance.setDefaultOptions(MapBoxOptions(
-      //_navigationOption.simulateRoute = true;
       mode: MapBoxNavigationMode.driving,
       language: "pt-BR",
       initialLatitude: FFAppState().latLngDriver?.latitude,
@@ -213,82 +149,133 @@ class _HomeWidgetState extends State<HomeWidget> {
         showConfirmConsentDialog(context);
       }
 
-      int differenceInMinutes = 0;
-      int differenceInSeconds = 0;
-
-      while (FFAppState().routeSelected.hasRouteId()) {
-        DateTime currentTime = DateTime.now();
-
-        Duration diff = currentTime.difference(savedTime!);
-        differenceInMinutes = diff.inMinutes;
-        differenceInSeconds = diff.inSeconds;
-
-        if (differenceInMinutes >= 1) {
-          _getLocation();
-
-          if ((latitude != null && longitude != null) &&
-              (latitude!.truncate() != 0 && longitude!.truncate() != 0)) {
-            savedTime = DateTime.now();
-
-            setState(() {
-              FFAppState().addToPositions(PositionsStruct(
-                cpf: FFAppState().cpf,
-                routeId: FFAppState().routeSelected.routeId,
-                latitude: FFAppState().latLngDriver?.latitude,
-                longitude: FFAppState().latLngDriver?.longitude,
-                date: DateTime.now()
-                    .subtract(DateTime.now().timeZoneOffset)
-                    .subtract(const Duration(hours: 3)),
-                finish: false,
-              ));
-            });
-          }
-
-          // else {
-          //   await Future.delayed(const Duration(milliseconds: 10000));
-          // }
-        }
-
-        if ((differenceInSeconds % 60) == 0) {
-          //Verificar se está com rede para realizar chamada para API
-          postRoute(false);
-          setState(() {});
-        } else if ((differenceInSeconds % 10) == 0) {
-          connectivityResult = await Connectivity().checkConnectivity();
-        }
-
-        await Future.delayed(const Duration(milliseconds: 1000));
-      }
+      // Configurar heartbeat e sistema de localização unificado
+      _setupHeartbeat();
+      _startLocationTracking();
     });
+
+    super.initState();
   }
 
   @override
   void dispose() {
     _controller?.dispose();
     _heartbeatTimer?.cancel();
+    _locationTimer?.cancel();
     _model.dispose();
     super.dispose();
   }
 
   Future<void> _getLocation() async {
     try {
-      var currentLocation = await location.getLocation();
+      // Verificar se serviço está habilitado
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        setState(() {
+          hasLocationIssues = true;
+        });
+        return;
+      }
+
+      // Verificar permissões
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          setState(() {
+            hasLocationIssues = true;
+          });
+          return;
+        }
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        setState(() {
+          hasLocationIssues = true;
+        });
+        return;
+      }
+
+      // Obter localização atual
+      Position position = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 0,
+        ),
+      );
 
       setState(() {
-        latitude = currentLocation.latitude;
-        longitude = currentLocation.longitude;
+        latitude = position.latitude;
+        longitude = position.longitude;
+        hasLocationIssues = false;
         FFAppState().latLngDriver =
-            LatLng(currentLocation.latitude!, currentLocation.longitude!);
+            LatLng(position.latitude, position.longitude);
       });
-      // }
+
+      debugPrint(
+          '📍 Localização obtida no foreground: ${position.latitude}, ${position.longitude}');
     } catch (e) {
-      hasLocationIssues = true;
+      debugPrint('❌ Erro ao obter localização: $e');
+      setState(() {
+        hasLocationIssues = true;
+      });
+    }
+  }
+
+  void _startLocationTracking() {
+    if (!FFAppState().routeSelected.hasRouteId()) {
+      return;
     }
 
-    if (hasLocationIssues) {
-      ScaffoldMessenger.of(context).showSnackBar(locationIssuesSnackBar);
-      hasLocationIssues = false;
-    }
+    debugPrint('🔄 Iniciando tracking de localização no foreground');
+
+    // Timer para coleta de localização a cada 1 minuto (foreground)
+    // enquanto o background service coleta a cada 5 minutos
+    _locationTimer = Timer.periodic(const Duration(minutes: 1), (timer) async {
+      if (!FFAppState().routeSelected.hasRouteId()) {
+        timer.cancel();
+        return;
+      }
+
+      await _getLocation();
+
+      if (latitude != null &&
+          longitude != null &&
+          latitude!.truncate() != 0 &&
+          longitude!.truncate() != 0) {
+        // Adicionar posição ao estado global
+        setState(() {
+          FFAppState().addToPositions(PositionsStruct(
+            cpf: FFAppState().cpf,
+            routeId: FFAppState().routeSelected.routeId,
+            latitude: FFAppState().latLngDriver?.latitude,
+            longitude: FFAppState().latLngDriver?.longitude,
+            date: DateTime.now()
+                .subtract(DateTime.now().timeZoneOffset)
+                .subtract(const Duration(hours: 3)),
+            finish: false,
+          ));
+        });
+
+        debugPrint(
+            '📍 Posição adicionada ao estado (foreground): ${latitude}, ${longitude}');
+      }
+    });
+
+    // Timer separado para envio para API a cada 1 minuto
+    Timer.periodic(const Duration(minutes: 1), (timer) async {
+      if (!FFAppState().routeSelected.hasRouteId()) {
+        timer.cancel();
+        return;
+      }
+
+      // Verificar conectividade
+      connectivityResult = await Connectivity().checkConnectivity();
+
+      // Enviar para API
+      postRoute(false);
+      setState(() {});
+    });
   }
 
   bool calculateDistanceInMostReadableUnit(
@@ -310,32 +297,61 @@ class _HomeWidgetState extends State<HomeWidget> {
     return true;
   }
 
-  // Verificar configurações de bateria
-  Future<void> _performBatteryCheck() async {
-    if (!mounted) return;
+  void _setupHeartbeat() {
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
 
-    _batteryCheckPerformed = true;
+      // Apenas verificar se o background service está ativo
+      BackgroundLocationService().isTrackingActive().then((isActive) {
+        debugPrint('💓 Heartbeat: Background service ativo: $isActive');
+      });
+    });
+  }
+
+  Future<void> _performBatteryCheck() async {
+    if (_batteryCheckPerformed) return;
 
     try {
-      final isOptimized =
-          await BatteryOptimizationService.isBatteryOptimizationDisabled();
-
-      if (!isOptimized) {
-        debugPrint('⚠️ Otimização de bateria ativa - mostrando aviso');
-
-        // Mostrar aviso discreto
-        if (mounted) {
-          Timer(const Duration(seconds: 1), () {
-            if (mounted) {
-              _showBatteryOptimizationWarning();
-            }
-          });
-        }
-      } else {
-        debugPrint('✅ Configurações de bateria adequadas');
-      }
+      final backgroundService = BackgroundLocationService();
+      await backgroundService.checkAndRequestBatteryPermissions(context);
+      _batteryCheckPerformed = true;
     } catch (e) {
-      debugPrint('⚠️ Erro ao verificar configurações de bateria: $e');
+      debugPrint('❌ Erro na verificação de bateria: $e');
+    }
+  }
+
+  void _onEmbeddedRouteEvent(e) async {
+    switch (e.eventType) {
+      case MapBoxEvent.progress_change:
+        var progressEvent = e.data as RouteProgressEvent;
+        if (progressEvent.currentStepInstruction != null) {
+          distance = progressEvent.distanceRemaining!.toInt();
+          unit = progressEvent.durationRemaining! > 60
+              ? '${(progressEvent.durationRemaining! / 60).toInt()} min'
+              : '${progressEvent.durationRemaining!.toInt()} seg';
+        }
+        setState(() {});
+        break;
+      case MapBoxEvent.route_building:
+      case MapBoxEvent.route_built:
+        setState(() {});
+        break;
+      case MapBoxEvent.route_build_failed:
+        setState(() {});
+        break;
+      case MapBoxEvent.navigation_running:
+        setState(() {});
+        break;
+      case MapBoxEvent.on_arrival:
+        break;
+      case MapBoxEvent.navigation_finished:
+      case MapBoxEvent.navigation_cancelled:
+        break;
+      default:
+        break;
     }
   }
 
@@ -445,73 +461,6 @@ class _HomeWidgetState extends State<HomeWidget> {
 
   // Iniciar viagem (extraída para reutilização)
   Future<void> _startTrip() async {
-    try {
-      _model.apiResult7s3 = await APIsPigmanGroup.acceptRouteCall.call(
-        cpf: FFAppState().cpf,
-        routeId: FFAppState().routeSelected.routeId,
-      );
-
-      if ((_model.apiResult7s3?.succeeded ?? true)) {
-        FFAppState().update(() {
-          FFAppState().stopInProgress = FFAppState().routeSelected.stops.first;
-        });
-
-        setState(() {
-          FFAppState().addToPositions(PositionsStruct(
-            cpf: FFAppState().cpf,
-            routeId: FFAppState().routeSelected.routeId,
-            latitude: FFAppState().latLngDriver?.latitude,
-            longitude: FFAppState().latLngDriver?.longitude,
-            date: DateTime.now()
-                .subtract(DateTime.now().timeZoneOffset)
-                .subtract(const Duration(hours: 3)),
-            finish: false,
-          ));
-        });
-
-        postRoute(false);
-
-        // Iniciar o serviço de localização com verificação de bateria
-        await BackgroundLocationService().startLocationUpdates(
-          cpf: FFAppState().cpf,
-          routeId: FFAppState().routeSelected.routeId.toString(),
-          finishViagem: false,
-          context: context,
-        );
-
-        // ADICIONAR ESTA LINHA:
-        _setupHeartbeat(); // Configurar heartbeat após iniciar viagem
-      } else {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: const Text(
-                'Não foi possível iniciar a viagem, verifique sua conexão com internet e tente novamente.',
-                style: TextStyle(color: Colors.white),
-              ),
-              duration: const Duration(milliseconds: 4000),
-              backgroundColor: FlutterFlowTheme.of(context).error,
-            ),
-          );
-        }
-      }
-      _model.menu = true;
-      setState(() {});
-    } catch (e) {
-      debugPrint('❌ Erro ao iniciar viagem: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: const Text(
-              'Erro ao iniciar viagem. Tente novamente.',
-              style: TextStyle(color: Colors.white),
-            ),
-            backgroundColor: FlutterFlowTheme.of(context).error,
-          ),
-        );
-      }
-    }
-
     try {
       _model.apiResult7s3 = await APIsPigmanGroup.acceptRouteCall.call(
         cpf: FFAppState().cpf,
@@ -694,37 +643,6 @@ class _HomeWidgetState extends State<HomeWidget> {
         );
       },
     );
-  }
-
-  // Configurar heartbeat para sinalizar que app está ativo
-  void _setupHeartbeat() async {
-    if (FFAppState().routeSelected.hasRouteId()) {
-      // Sinalizar imediatamente que app está ativo
-      await _updateMainAppHeartbeat();
-
-      // Configurar timer para manter heartbeat
-      _heartbeatTimer?.cancel();
-      _heartbeatTimer =
-          Timer.periodic(const Duration(seconds: 15), (timer) async {
-        if (!mounted || !FFAppState().routeSelected.hasRouteId()) {
-          timer.cancel();
-          return;
-        }
-        await _updateMainAppHeartbeat();
-      });
-    }
-  }
-
-  // Atualizar heartbeat do app principal
-  Future<void> _updateMainAppHeartbeat() async {
-    try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt(
-          'main_app_heartbeat', DateTime.now().millisecondsSinceEpoch);
-      debugPrint('🟢 App principal ativo - heartbeat atualizado');
-    } catch (e) {
-      debugPrint('❌ Erro ao atualizar heartbeat: $e');
-    }
   }
 
   @override
@@ -2298,101 +2216,65 @@ class _HomeWidgetState extends State<HomeWidget> {
     );
   }
 
-  Future<void> postRoute(bool finish) async {
-    if (FFAppState().positions.isNotEmpty
-        ? !FFAppState().positions.last.finishViagem
-        : true) {
-      while (_model.index < FFAppState().positions.length) {
-        connectivityResult = await Connectivity().checkConnectivity();
+  void postRoute(bool isFinished) async {
+    connectivityResult = await Connectivity().checkConnectivity();
 
-        if (connectivityResult.contains(ConnectivityResult.wifi) ||
-            connectivityResult.contains(ConnectivityResult.mobile)) {
-          if (FFAppState().positions.isNotEmpty) {
-            _model.enviarLocalizacao1 =
-                await APIsPigmanGroup.postPositionCall.call(
-              cpf: FFAppState().cpf,
-              routeId: FFAppState().positions.first.routeId,
-              latitude: FFAppState().positions.first.latitude,
-              longitude: FFAppState().positions.first.longitude,
-              isFinished: FFAppState().positions.first.finish,
-              infoDt: dateTimeFormat(
-                'yyyy-MM-dd HH:mm:ss',
-                FFAppState().positions.first.date,
-                locale: FFLocalizations.of(context).languageCode,
-              ),
-            );
+    if (connectivityResult.any((result) =>
+        result == ConnectivityResult.mobile ||
+        result == ConnectivityResult.wifi ||
+        result == ConnectivityResult.ethernet)) {
+      if (FFAppState().positions.isNotEmpty) {
+        _model.positionsRouteCall =
+            await APIsPigmanGroup.positionsRouteCall.call(
+          positionsList: FFAppState().positions,
+        );
 
-            if ((_model.enviarLocalizacao1?.succeeded ?? true)) {
-              if (FFAppState().positions.isNotEmpty) {
-                setState(() {
-                  FFAppState().removeAtIndexFromPositions(0);
-                });
-              }
-            } else {
-              setState(() {
-                _model.index = _model.index + 1;
-              });
-            }
-          }
-        } else {
-          break;
+        if ((_model.positionsRouteCall?.succeeded ?? true)) {
+          debugPrint('✅ Posições enviadas para API via foreground');
+          setState(() {
+            FFAppState().positions = [];
+          });
         }
       }
     }
   }
 
-  Future<void> _onEmbeddedRouteEvent(e) async {
-    switch (e.eventType) {
-      case MapBoxEvent.progress_change:
-        _model.menu = true;
-        _model.botaoRota = true;
+  Future<void> concluirViagem() async {
+    try {
+      debugPrint('🏁 Iniciando conclusão da viagem');
 
-        var progressEvent = e.data as RouteProgressEvent;
-        if (progressEvent.currentStepInstruction != null) {}
-        break;
+      // Parar o background service
+      final backgroundService = BackgroundLocationService();
+      await backgroundService.stopLocationUpdates();
 
-      case MapBoxEvent.route_building:
-        break;
+      // Cancelar timers locais
+      _locationTimer?.cancel();
 
-      case MapBoxEvent.route_built:
-        setState(() {});
-        break;
+      // Obter localização final
+      await _getLocation();
 
-      case MapBoxEvent.route_build_failed:
-        setState(() {});
-        break;
+      if (latitude != null && longitude != null) {
+        setState(() {
+          FFAppState().addToPositions(PositionsStruct(
+            cpf: FFAppState().cpf,
+            routeId: FFAppState().routeSelected.routeId,
+            latitude: latitude,
+            longitude: longitude,
+            date: DateTime.now()
+                .subtract(DateTime.now().timeZoneOffset)
+                .subtract(const Duration(hours: 3)),
+            finish: true, // Marcando como finalizada
+          ));
+        });
 
-      case MapBoxEvent.navigation_running:
-        setState(() {});
-        break;
+        // Enviar posição final
+        postRoute(true);
+      }
 
-      case MapBoxEvent.on_arrival: //Chegou ao destino
-        _model.botaoRota = true;
-        _model.menu = true;
-
-        if (!_isMultipleStop) {
-          await Future.delayed(const Duration(seconds: 3));
-        }
-        break;
-
-      case MapBoxEvent.navigation_finished:
-        _model.botaoRota = true;
-        _model.menu = true;
-
-        setState(() {});
-        break;
-
-      case MapBoxEvent.navigation_cancelled: //Viagem cancelada
-        _model.botaoRota = true;
-        _model.menu = true;
-        _controller?.clearRoute();
-        _controller?.finishNavigation();
-        break;
-
-      default:
-        break;
+      debugPrint('✅ Viagem concluída');
+    } catch (e) {
+      debugPrint('❌ Erro ao concluir viagem: $e');
     }
-    setState(() {});
   }
 
   dynamic openWhatsAppChatWithCurrentCompany() async {
@@ -2400,171 +2282,82 @@ class _HomeWidgetState extends State<HomeWidget> {
         'https://wa.me/55${FFAppState().routeSelected.companyPhone}?text=Ol%C3%A1%2C%20preciso%20de%20ajuda%20com%20meu%20aplicativo%20RotaSys');
   }
 
-  void showConfirmConsentDialog(BuildContext bcontext) {
+  void showConfirmConsentDialog(BuildContext context) {
     showDialog(
-      context: bcontext,
-      barrierDismissible: false, // Prevents dialog from closing on tap outside
-      builder: (bcontext) {
-        return PopScope(
-          canPop: false,
-          child: AlertDialog(
-            content: SingleChildScrollView(
-              child: ListBody(
-                children: <Widget>[
-                  RichText(
-                      text: TextSpan(children: [
-                    const TextSpan(
-                      text:
-                          'Para continuar utilizando este aplicativo, é necessário aceitar nossos',
-                      style: TextStyle(color: Colors.black, fontSize: 16.0),
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: const Text('Termos de Uso e Política de Privacidade'),
+          content: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Para utilizar este aplicativo, você deve aceitar nossos Termos de Uso e Política de Privacidade.',
+                  style: TextStyle(fontSize: 16),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'Este aplicativo coleta dados de localização para permitir o rastreamento de rotas em tempo real, mesmo quando o aplicativo está fechado ou não está em uso.',
+                  style: TextStyle(fontSize: 14),
+                ),
+                const SizedBox(height: 16),
+                GestureDetector(
+                  onTap: () async {
+                    const url =
+                        'https://www.pigmadesenvolvimentos.com.br/termos-de-uso';
+                    if (await canLaunchUrl(Uri.parse(url))) {
+                      await launchUrl(Uri.parse(url));
+                    }
+                  },
+                  child: const Text(
+                    'Leia os Termos de Uso completos',
+                    style: TextStyle(
+                      color: Colors.blue,
+                      decoration: TextDecoration.underline,
                     ),
-                    TextSpan(
-                      text: ' Termos de Uso ',
-                      style: const TextStyle(
-                          color: Colors.blue,
-                          fontSize: 16.0,
-                          fontWeight: FontWeight.bold),
-                      recognizer: TapGestureRecognizer()
-                        ..onTap = () {
-                          launchUrl(Uri(
-                              scheme: 'https',
-                              host: '1drv.ms',
-                              path: 'w/s!Ag-lHaRe-G-gguV-TkfoOYCqnIsSGw'));
-                        },
+                  ),
+                ),
+                const SizedBox(height: 8),
+                GestureDetector(
+                  onTap: () async {
+                    const url =
+                        'https://www.pigmadesenvolvimentos.com.br/politica-de-privacidade';
+                    if (await canLaunchUrl(Uri.parse(url))) {
+                      await launchUrl(Uri.parse(url));
+                    }
+                  },
+                  child: const Text(
+                    'Leia a Política de Privacidade completa',
+                    style: TextStyle(
+                      color: Colors.blue,
+                      decoration: TextDecoration.underline,
                     ),
-                    const TextSpan(
-                      text: 'e nossa',
-                      style: TextStyle(color: Colors.black, fontSize: 16.0),
-                    ),
-                    TextSpan(
-                      text: ' Política de Privacidade',
-                      style: const TextStyle(
-                          color: Colors.blue,
-                          fontSize: 16.0,
-                          fontWeight: FontWeight.bold),
-                      recognizer: TapGestureRecognizer()
-                        ..onTap = () {
-                          launchUrl(Uri(
-                              scheme: 'https',
-                              host: '1drv.ms',
-                              path: 'w/s!Ag-lHaRe-G-gguZJMYQcMsih2pBJ8A'));
-                        },
-                    ),
-                    const TextSpan(
-                      text:
-                          '. \n\nConfirme que você leu e concorda com as condições acima.',
-                      style: TextStyle(color: Colors.black, fontSize: 16.0),
-                    ),
-                  ])),
-                ],
-              ),
+                  ),
+                ),
+              ],
             ),
-            actions: <Widget>[
-              Row(
-                  mainAxisSize: MainAxisSize.max,
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    FFButtonWidget(
-                      onPressed: () {
-                        setState(() {
-                          FFAppState().acceptedTermsAndPrivacy = false;
-                          FFAppState().viagemDisponivel = RouteStruct();
-                          FFAppState().cpf = '';
-                          FFAppState().routeSelected = RouteStruct();
-                        });
-
-                        Navigator.of(context).pop(); // Close the dialog
-                        context.pushReplacementNamed(
-                            'codigoAcesso'); // Close the dialog
-                      },
-                      text: 'Discordo',
-                      options: FFButtonOptions(
-                        width: 125.0,
-                        height: 50.0,
-                        padding: const EdgeInsetsDirectional.fromSTEB(
-                            8.0, 0.0, 8.0, 0.0),
-                        iconPadding: const EdgeInsetsDirectional.fromSTEB(
-                            0.0, 0.0, 0.0, 0.0),
-                        color: FlutterFlowTheme.of(context).alternate,
-                        textStyle:
-                            FlutterFlowTheme.of(context).titleSmall.override(
-                                  fontFamily: 'Poppins',
-                                  color: Colors.white,
-                                  fontSize: 14.0,
-                                ),
-                        elevation: 0.0,
-                        borderSide: const BorderSide(
-                          color: Color(0xFFBF3139),
-                          width: 2.0,
-                        ),
-                        borderRadius: BorderRadius.circular(8.0),
-                      ),
-                    ),
-                    FFButtonWidget(
-                      onPressed: () async {
-                        var termsAcceptance =
-                            await APIsPigmanGroup.setTermsAcceptanceCall.call(
-                          cpf: FFAppState().cpf,
-                          termsAccepted: true,
-                        );
-
-                        if (!termsAcceptance.succeeded) {
-                          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                            content: const Text(
-                              'Houve um erro durante esta requisição. Tente novamente.',
-                              style: TextStyle(
-                                color: Colors.white,
-                              ),
-                            ),
-                            duration: const Duration(milliseconds: 4000),
-                            backgroundColor: FlutterFlowTheme.of(context).error,
-                          ));
-
-                          setState(() {
-                            FFAppState().acceptedTermsAndPrivacy = false;
-                            FFAppState().viagemDisponivel = RouteStruct();
-                            FFAppState().cpf = '';
-                            FFAppState().routeSelected = RouteStruct();
-                          });
-
-                          Navigator.of(context).pop(); // Close the dialog
-                          context.pushReplacementNamed(
-                              'codigoAcesso'); // Close the dialog
-                        } else {
-                          setState(() {
-                            FFAppState().acceptedTermsAndPrivacy = true;
-                          });
-
-                          Navigator.of(context).pop(); // Close the dialog
-                        }
-                      },
-                      text: 'Li e concordo',
-                      options: FFButtonOptions(
-                        width: 125.0,
-                        height: 50.0,
-                        padding: const EdgeInsetsDirectional.fromSTEB(
-                            8.0, 0.0, 8.0, 0.0),
-                        iconPadding: const EdgeInsetsDirectional.fromSTEB(
-                            0.0, 0.0, 0.0, 0.0),
-                        color: FlutterFlowTheme.of(context).tertiary,
-                        textStyle:
-                            FlutterFlowTheme.of(context).titleSmall.override(
-                                  fontFamily: 'Poppins',
-                                  color: Colors.white,
-                                  fontSize: 14.0,
-                                ),
-                        elevation: 0.0,
-                        borderSide: const BorderSide(
-                          color: Color(0xFF298032),
-                          width: 2.0,
-                        ),
-                        borderRadius: BorderRadius.circular(8.0),
-                      ),
-                    ),
-                  ]),
-            ],
           ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.of(context).pop();
+                // Não aceitar os termos resulta em fechar o app
+                SystemNavigator.pop();
+              },
+              child: const Text('Recusar'),
+            ),
+            TextButton(
+              onPressed: () {
+                setState(() {
+                  FFAppState().acceptedTermsAndPrivacy = true;
+                });
+                Navigator.of(context).pop();
+              },
+              child: const Text('Aceitar'),
+            ),
+          ],
         );
       },
     );

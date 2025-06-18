@@ -1,11 +1,13 @@
-import 'package:location/location.dart';
 import '/backend/api_requests/api_calls.dart';
-import '/backend/schema/structs/index.dart';
+import '/backend/backend.dart';
 import '/flutter_flow/flutter_flow_theme.dart';
 import '/flutter_flow/flutter_flow_util.dart';
 import '/flutter_flow/flutter_flow_widgets.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter/scheduler.dart';
+import 'package:mask_text_input_formatter/mask_text_input_formatter.dart';
+// REMOVIDO: import 'package:location/location.dart';
+import 'package:geolocator/geolocator.dart'; // ADICIONADO: usar apenas geolocator
 import 'codigo_acesso_model.dart';
 export 'codigo_acesso_model.dart';
 
@@ -17,464 +19,519 @@ class CodigoAcessoWidget extends StatefulWidget {
 }
 
 class _CodigoAcessoWidgetState extends State<CodigoAcessoWidget> {
-  late SnackBar locationIssuesSnackBar;
-
   late CodigoAcessoModel _model;
+
   final scaffoldKey = GlobalKey<ScaffoldState>();
   LatLng? currentUserLocationValue;
   bool hasLocationIssues = false;
-  bool localFromRefresh = false;
+
+  var maskFormatter = MaskTextInputFormatter(
+    mask: '###.###.###-##',
+    filter: {"#": RegExp(r'[0-9]')},
+    type: MaskAutoCompletionType.lazy,
+  );
 
   @override
   void initState() {
     super.initState();
     _model = createModel(context, () => CodigoAcessoModel());
 
-    localFromRefresh = FFAppState().fromRefresh;
-
-    locationIssuesSnackBar = SnackBar(
-      content: const Text(
-        'Não foi possível obter a localização do dispositivo. Verifique se o GPS encontra-se ativo e se a permissão de acesso foi concedida.',
-        style: TextStyle(
-          color: Colors.white,
-        ),
-      ),
-      duration: const Duration(milliseconds: 4000),
-      backgroundColor: FlutterFlowTheme.of(context).error,
-    );
-
     _model.textController ??= TextEditingController();
     _model.textFieldFocusNode ??= FocusNode();
 
-    () async {
-      await _getLocation().whenComplete(
-          () => currentUserLocationValue = FFAppState().latLngDriver);
-      setState(() {});
-    }();
+    // On page load action.
+    SchedulerBinding.instance.addPostFrameCallback((_) async {
+      // MODIFICADO: usar o novo método _getLocation
+      await _getLocation();
 
-    () async {
-      if (FFAppState().fromRefresh ||
-          (FFAppState().keepLoggedIn &&
-              FFAppState().cpf != '' &&
-              FFAppState().cpf != '00000000000')) {
-        // FFAppState().update(() {
-        //   FFAppState().routeSelected = RouteStruct();
-        //   FFAppState().stopInProgress = StopStruct();
-        // });
+      if (FFAppState().cpf.isNotEmpty) {
+        _model.getCurrentRoute = await APIsPigmanGroup.gETCurrentRouteCall.call(
+          cpf: FFAppState().cpf,
+        );
 
-        setState(() {
-          FFAppState().routeSelected = RouteStruct();
-          FFAppState().stopInProgress = StopStruct();
-          FFAppState().fromRefresh = false;
-        });
+        if ((_model.getCurrentRoute?.succeeded ?? true)) {
+          setState(() {
+            FFAppState().routeSelected =
+                APIsPigmanGroup.gETCurrentRouteCall.route(
+              (_model.getCurrentRoute?.jsonBody ?? ''),
+            )!;
+          });
 
-        if (FFAppState().viagemFinalizada &&
-            FFAppState().positions.isNotEmpty) {
-          context.pushReplacementNamed('viagemConcluida');
+          if (FFAppState()
+              .routeSelected
+              .stops
+              .where((e) => !e.isComplete)
+              .toList()
+              .isNotEmpty) {
+            setState(() {
+              FFAppState().stopInProgress = FFAppState()
+                  .routeSelected
+                  .stops
+                  .where((e) => !e.isComplete)
+                  .toList()
+                  .first;
+            });
+          } else {
+            setState(() {
+              FFAppState().stopInProgress =
+                  FFAppState().routeSelected.stops.last;
+            });
+          }
+
+          context.pushReplacementNamed('home');
         } else {
-          FFAppState().viagemFinalizada = false;
-
-          _model.getCurrentRoute =
-              await APIsPigmanGroup.gETCurrentRouteCall.call(
+          _model.getNextRoute = await APIsPigmanGroup.getNextRouteCall.call(
             cpf: FFAppState().cpf,
           );
 
-          if ((_model.getCurrentRoute?.succeeded ?? true)) {
+          if ((_model.getNextRoute?.succeeded ?? true)) {
             setState(() {
               FFAppState().routeSelected =
-                  APIsPigmanGroup.gETCurrentRouteCall.route(
-                (_model.getCurrentRoute?.jsonBody ?? ''),
+                  APIsPigmanGroup.getNextRouteCall.rota(
+                (_model.getNextRoute?.jsonBody ?? ''),
               )!;
             });
 
-            if (FFAppState()
-                .routeSelected
-                .stops
-                .where((e) => !e.isComplete)
-                .toList()
-                .isNotEmpty) {
-              setState(() {
-                FFAppState().stopInProgress = FFAppState()
-                    .routeSelected
-                    .stops
-                    .where((e) => !e.isComplete)
-                    .toList()
-                    .first;
-              });
-            } else {
-              setState(() {
-                FFAppState().stopInProgress =
-                    FFAppState().routeSelected.stops.last;
-              });
-            }
-
-            context.pushReplacementNamed('home');
-          } else {
-            _model.getNextRoute = await APIsPigmanGroup.getNextRouteCall.call(
-              cpf: FFAppState().cpf,
-            );
-
-            if ((_model.getNextRoute?.succeeded ?? true)) {
-              setState(() {
-                FFAppState().routeSelected =
-                    APIsPigmanGroup.getNextRouteCall.rota(
-                  (_model.getNextRoute?.jsonBody ?? ''),
-                )!;
-              });
-
-              setState(() {
-                FFAppState().latLngDriver = currentUserLocationValue;
-              });
-            }
-
-            context.pushReplacementNamed('home');
+            setState(() {
+              FFAppState().latLngDriver = currentUserLocationValue;
+            });
           }
-        }
 
-        setState(() {});
+          context.pushReplacementNamed('home');
+        }
       }
-    }();
+
+      setState(() {});
+    });
   }
 
   @override
   void dispose() {
     _model.dispose();
-
     super.dispose();
   }
 
+  /// NOVO: Método unificado para obter localização usando apenas Geolocator
   Future<void> _getLocation() async {
-    final location = Location();
-
     try {
-      bool serviceEnabled = await location.serviceEnabled();
+      debugPrint('📍 Iniciando obtenção de localização...');
 
+      // Verificar se o serviço de localização está habilitado
+      bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        serviceEnabled = await location.requestService();
-
+        debugPrint('❌ Serviço de localização não está habilitado');
+        // Tentar solicitar que o usuário habilite
+        serviceEnabled = await Geolocator.openLocationSettings();
         if (!serviceEnabled) {
-          hasLocationIssues = true;
+          setState(() {
+            hasLocationIssues = true;
+          });
+          return;
         }
       }
 
-      PermissionStatus permissionGranted = await location.hasPermission();
-
-      if (permissionGranted == PermissionStatus.denied) {
-        permissionGranted = await location.requestPermission();
-
-        if (permissionGranted != PermissionStatus.granted) {
-          hasLocationIssues = true;
+      // Verificar permissões
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        debugPrint('🔍 Solicitando permissão de localização...');
+        permission = await Geolocator.requestPermission();
+        if (permission == LocationPermission.denied) {
+          debugPrint('❌ Permissão de localização negada');
+          setState(() {
+            hasLocationIssues = true;
+          });
+          return;
         }
       }
 
-      if (!hasLocationIssues) {
-        var currentLocation = await location.getLocation();
-
+      if (permission == LocationPermission.deniedForever) {
+        debugPrint('❌ Permissão de localização negada permanentemente');
         setState(() {
-          FFAppState().latLngDriver =
-              LatLng(currentLocation.latitude!, currentLocation.longitude!);
+          hasLocationIssues = true;
         });
+        return;
       }
-    } catch (e) {
-      print("Erro ao obter a localização: $e");
-      hasLocationIssues = true;
-    }
 
-    if (hasLocationIssues) {
-      ScaffoldMessenger.of(context).showSnackBar(locationIssuesSnackBar);
-      hasLocationIssues = false;
+      // Obter localização atual
+      debugPrint('📡 Obtendo posição atual...');
+      Position currentLocation = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.high,
+          distanceFilter: 0,
+        ),
+      );
+
+      setState(() {
+        hasLocationIssues = false;
+        currentUserLocationValue = LatLng(
+          currentLocation.latitude,
+          currentLocation.longitude,
+        );
+        FFAppState().latLngDriver = currentUserLocationValue;
+      });
+
+      debugPrint('✅ Localização obtida com sucesso: '
+          'Lat=${currentLocation.latitude}, Lng=${currentLocation.longitude}');
+    } catch (e) {
+      debugPrint('❌ Erro ao obter localização: $e');
+      setState(() {
+        hasLocationIssues = true;
+      });
+
+      // Tentar obter última localização conhecida como fallback
+      try {
+        Position? lastKnownPosition = await Geolocator.getLastKnownPosition();
+        if (lastKnownPosition != null) {
+          setState(() {
+            currentUserLocationValue = LatLng(
+              lastKnownPosition.latitude,
+              lastKnownPosition.longitude,
+            );
+            FFAppState().latLngDriver = currentUserLocationValue;
+            hasLocationIssues = false;
+          });
+          debugPrint('📍 Usando última localização conhecida: '
+              'Lat=${lastKnownPosition.latitude}, Lng=${lastKnownPosition.longitude}');
+        }
+      } catch (lastLocationError) {
+        debugPrint(
+            '❌ Erro ao obter última localização conhecida: $lastLocationError');
+      }
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    context.watch<FFAppState>();
-
-    if (localFromRefresh ||
-        (FFAppState().keepLoggedIn &&
-            FFAppState().cpf != '' &&
-            FFAppState().cpf != '00000000000')) {
-      return Scaffold(
+    return GestureDetector(
+      onTap: () => _model.unfocusNode.canRequestFocus
+          ? FocusScope.of(context).requestFocus(_model.unfocusNode)
+          : FocusScope.of(context).unfocus(),
+      child: Scaffold(
         key: scaffoldKey,
-        backgroundColor: const Color(0xFF2D2D6B),
-        body: const Center(
-          child: CircularProgressIndicator(
-            color: Colors.white,
-          ), // Optional loading indicator
-        ),
-      );
-    }
-
-    // else {
-    return Scaffold(
-      key: scaffoldKey,
-      backgroundColor: const Color(0xFF2D2D6B),
-      body: Column(
-        mainAxisSize: MainAxisSize.max,
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Align(
-            alignment: const AlignmentDirectional(0.0, 0.0),
-            child: Padding(
-              padding:
-                  const EdgeInsetsDirectional.fromSTEB(20.0, 0.0, 20.0, 0.0),
-              child: Container(
-                width: 320.0,
-                height: 320.0,
-                decoration: BoxDecoration(
-                  color: FlutterFlowTheme.of(context).secondaryBackground,
-                  borderRadius: BorderRadius.circular(8.0),
-                ),
-                child: Column(
-                  mainAxisSize: MainAxisSize.max,
-                  children: [
-                    Padding(
-                      padding: const EdgeInsetsDirectional.fromSTEB(
-                          0.0, 12.5, 0.0, 0.0),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(8.0),
-                        child: Image.asset(
-                          'assets/images/rotasys_Text_BG.png',
-                          width: 100.0,
-                          height: 100.0,
-                          fit: BoxFit.cover,
-                        ),
-                      ),
+        backgroundColor: FlutterFlowTheme.of(context).primaryBackground,
+        body: SafeArea(
+          top: true,
+          child: Stack(
+            children: [
+              Align(
+                alignment: const AlignmentDirectional(0.0, 0.0),
+                child: Container(
+                  width: double.infinity,
+                  height: double.infinity,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [
+                        FlutterFlowTheme.of(context).primary,
+                        FlutterFlowTheme.of(context).secondary
+                      ],
+                      stops: const [0.0, 1.0],
+                      begin: const AlignmentDirectional(0.0, -1.0),
+                      end: const AlignmentDirectional(0, 1.0),
                     ),
-                    const Spacer(),
-                    Align(
-                      alignment: const AlignmentDirectional(-1.0, 0.0),
-                      child: Padding(
-                        padding: const EdgeInsetsDirectional.fromSTEB(
-                            20.0, 0.0, 0.0, 0.0),
-                        child: Text(
-                          'CPF',
-                          style:
-                              FlutterFlowTheme.of(context).bodyMedium.override(
-                                    fontFamily: 'Inter',
-                                    fontSize: 16.0,
-                                    fontWeight: FontWeight.normal,
+                  ),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.max,
+                    children: [
+                      Expanded(
+                        child: Container(
+                          width: double.infinity,
+                          height: 500.0,
+                          decoration: const BoxDecoration(),
+                          child: Column(
+                            mainAxisSize: MainAxisSize.max,
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Padding(
+                                padding: const EdgeInsetsDirectional.fromSTEB(
+                                    0.0, 0.0, 0.0, 50.0),
+                                child: ClipRRect(
+                                  borderRadius: BorderRadius.circular(8.0),
+                                  child: Image.asset(
+                                    'assets/images/rotasysAppIcon.png',
+                                    width: 150.0,
+                                    height: 150.0,
+                                    fit: BoxFit.cover,
                                   ),
-                        ),
-                      ),
-                    ),
-                    Form(
-                      key: _model.formKey,
-                      autovalidateMode: AutovalidateMode.disabled,
-                      child: Padding(
-                        padding: const EdgeInsetsDirectional.fromSTEB(
-                            20.0, 8.0, 20.0, 0.0),
-                        child: TextFormField(
-                          controller: _model.textController,
-                          keyboardType: TextInputType.number,
-                          focusNode: _model.textFieldFocusNode,
-                          obscureText: false,
-                          decoration: InputDecoration(
-                            labelStyle:
-                                FlutterFlowTheme.of(context).labelMedium,
-                            hintStyle: FlutterFlowTheme.of(context).labelMedium,
-                            enabledBorder: UnderlineInputBorder(
-                              borderSide: const BorderSide(
-                                color: Color(0x00000000),
-                                width: 2.0,
+                                ),
                               ),
-                              borderRadius: BorderRadius.circular(8.0),
-                            ),
-                            focusedBorder: UnderlineInputBorder(
-                              borderSide: BorderSide(
-                                color: FlutterFlowTheme.of(context).primary,
-                                width: 2.0,
+                              Padding(
+                                padding: const EdgeInsetsDirectional.fromSTEB(
+                                    44.0, 0.0, 44.0, 20.0),
+                                child: Container(
+                                  width: double.infinity,
+                                  height: 60.0,
+                                  decoration: BoxDecoration(
+                                    color: FlutterFlowTheme.of(context)
+                                        .secondaryBackground,
+                                    boxShadow: const [
+                                      BoxShadow(
+                                        blurRadius: 5.0,
+                                        color: Color(0x4D101213),
+                                        offset: Offset(0.0, 2.0),
+                                      )
+                                    ],
+                                    borderRadius: BorderRadius.circular(8.0),
+                                  ),
+                                  child: TextFormField(
+                                    controller: _model.textController,
+                                    focusNode: _model.textFieldFocusNode,
+                                    inputFormatters: [maskFormatter],
+                                    autofocus: true,
+                                    obscureText: false,
+                                    decoration: InputDecoration(
+                                      labelText: 'Digite seu CPF',
+                                      labelStyle: FlutterFlowTheme.of(context)
+                                          .labelMedium
+                                          .override(
+                                            fontFamily: 'Nunito Sans',
+                                            letterSpacing: 0.0,
+                                          ),
+                                      hintText: '000.000.000-00',
+                                      hintStyle: FlutterFlowTheme.of(context)
+                                          .labelMedium
+                                          .override(
+                                            fontFamily: 'Nunito Sans',
+                                            letterSpacing: 0.0,
+                                          ),
+                                      enabledBorder: OutlineInputBorder(
+                                        borderSide: const BorderSide(
+                                          color: Color(0x00000000),
+                                          width: 0.0,
+                                        ),
+                                        borderRadius:
+                                            BorderRadius.circular(8.0),
+                                      ),
+                                      focusedBorder: OutlineInputBorder(
+                                        borderSide: const BorderSide(
+                                          color: Color(0x00000000),
+                                          width: 0.0,
+                                        ),
+                                        borderRadius:
+                                            BorderRadius.circular(8.0),
+                                      ),
+                                      errorBorder: OutlineInputBorder(
+                                        borderSide: BorderSide(
+                                          color: FlutterFlowTheme.of(context)
+                                              .error,
+                                          width: 0.0,
+                                        ),
+                                        borderRadius:
+                                            BorderRadius.circular(8.0),
+                                      ),
+                                      focusedErrorBorder: OutlineInputBorder(
+                                        borderSide: BorderSide(
+                                          color: FlutterFlowTheme.of(context)
+                                              .error,
+                                          width: 0.0,
+                                        ),
+                                        borderRadius:
+                                            BorderRadius.circular(8.0),
+                                      ),
+                                      filled: true,
+                                      fillColor: FlutterFlowTheme.of(context)
+                                          .secondaryBackground,
+                                      contentPadding:
+                                          const EdgeInsetsDirectional.fromSTEB(
+                                              20.0, 24.0, 0.0, 24.0),
+                                    ),
+                                    style: FlutterFlowTheme.of(context)
+                                        .bodyMedium
+                                        .override(
+                                          fontFamily: 'Nunito Sans',
+                                          letterSpacing: 0.0,
+                                        ),
+                                    keyboardType: TextInputType.number,
+                                    validator: _model.textControllerValidator
+                                        .asValidator(context),
+                                  ),
+                                ),
                               ),
-                              borderRadius: BorderRadius.circular(8.0),
-                            ),
-                            errorBorder: UnderlineInputBorder(
-                              borderSide: BorderSide(
-                                color: FlutterFlowTheme.of(context).error,
-                                width: 2.0,
+                              Padding(
+                                padding: const EdgeInsetsDirectional.fromSTEB(
+                                    44.0, 0.0, 44.0, 0.0),
+                                child: FFButtonWidget(
+                                  onPressed: () async {
+                                    if (_model.formKey.currentState == null ||
+                                        !_model.formKey.currentState!
+                                            .validate()) {
+                                      return;
+                                    }
+
+                                    // Verificar localização antes de prosseguir
+                                    if (hasLocationIssues) {
+                                      await _getLocation();
+                                    }
+
+                                    if (hasLocationIssues) {
+                                      ScaffoldMessenger.of(context)
+                                          .showSnackBar(
+                                        SnackBar(
+                                          content: const Text(
+                                            'Não foi possível obter sua localização. '
+                                            'Verifique se o GPS está ativo e as permissões foram concedidas.',
+                                            style: TextStyle(
+                                              color: Colors.white,
+                                            ),
+                                          ),
+                                          duration: const Duration(seconds: 4),
+                                          backgroundColor:
+                                              FlutterFlowTheme.of(context)
+                                                  .error,
+                                        ),
+                                      );
+                                      return;
+                                    }
+
+                                    setState(() {
+                                      FFAppState().cpf =
+                                          maskFormatter.unmaskText(
+                                              _model.textController.text);
+                                    });
+
+                                    _model.getCurrentRoute =
+                                        await APIsPigmanGroup
+                                            .gETCurrentRouteCall
+                                            .call(
+                                      cpf: FFAppState().cpf,
+                                    );
+
+                                    if ((_model.getCurrentRoute?.succeeded ??
+                                        true)) {
+                                      setState(() {
+                                        FFAppState().routeSelected =
+                                            APIsPigmanGroup.gETCurrentRouteCall
+                                                .route(
+                                          (_model.getCurrentRoute?.jsonBody ??
+                                              ''),
+                                        )!;
+                                      });
+
+                                      if (FFAppState()
+                                          .routeSelected
+                                          .stops
+                                          .where((e) => !e.isComplete)
+                                          .toList()
+                                          .isNotEmpty) {
+                                        setState(() {
+                                          FFAppState().stopInProgress =
+                                              FFAppState()
+                                                  .routeSelected
+                                                  .stops
+                                                  .where((e) => !e.isComplete)
+                                                  .toList()
+                                                  .first;
+                                        });
+                                      } else {
+                                        setState(() {
+                                          FFAppState().stopInProgress =
+                                              FFAppState()
+                                                  .routeSelected
+                                                  .stops
+                                                  .last;
+                                        });
+                                      }
+
+                                      context.pushReplacementNamed('home');
+                                    } else {
+                                      _model.getNextRoute =
+                                          await APIsPigmanGroup.getNextRouteCall
+                                              .call(
+                                        cpf: FFAppState().cpf,
+                                      );
+
+                                      if ((_model.getNextRoute?.succeeded ??
+                                          true)) {
+                                        setState(() {
+                                          FFAppState().routeSelected =
+                                              APIsPigmanGroup.getNextRouteCall
+                                                  .rota(
+                                            (_model.getNextRoute?.jsonBody ??
+                                                ''),
+                                          )!;
+                                        });
+
+                                        setState(() {
+                                          FFAppState().latLngDriver =
+                                              currentUserLocationValue;
+                                        });
+                                      }
+
+                                      context.pushReplacementNamed('home');
+                                    }
+
+                                    setState(() {});
+                                  },
+                                  text: 'Entrar',
+                                  options: FFButtonOptions(
+                                    width: double.infinity,
+                                    height: 60.0,
+                                    padding:
+                                        const EdgeInsetsDirectional.fromSTEB(
+                                            0.0, 0.0, 0.0, 0.0),
+                                    iconPadding:
+                                        const EdgeInsetsDirectional.fromSTEB(
+                                            0.0, 0.0, 0.0, 0.0),
+                                    color: const Color(0xFF101213),
+                                    textStyle: FlutterFlowTheme.of(context)
+                                        .titleMedium
+                                        .override(
+                                          fontFamily: 'Nunito Sans',
+                                          color: Colors.white,
+                                          letterSpacing: 0.0,
+                                        ),
+                                    elevation: 2.0,
+                                    borderSide: const BorderSide(
+                                      color: Colors.transparent,
+                                      width: 1.0,
+                                    ),
+                                    borderRadius: BorderRadius.circular(8.0),
+                                  ),
+                                ),
                               ),
-                              borderRadius: BorderRadius.circular(8.0),
-                            ),
-                            focusedErrorBorder: UnderlineInputBorder(
-                              borderSide: BorderSide(
-                                color: FlutterFlowTheme.of(context).error,
-                                width: 2.0,
-                              ),
-                              borderRadius: BorderRadius.circular(8.0),
-                            ),
-                            filled: true,
-                            fillColor: const Color(0xFFECECEC),
+                            ],
                           ),
-                          style: FlutterFlowTheme.of(context).bodyMedium,
-                          validator: _model.textControllerValidator
-                              .asValidator(context),
-                          inputFormatters: [_model.textFieldMask],
                         ),
                       ),
-                    ),
-                    const Spacer(flex: 2),
-                    CheckboxListTile(
-                      title: const Text("Mantenha-me conectado!"),
-                      value: FFAppState().keepLoggedIn,
-                      onChanged: (newValue) {
-                        setState(() {
-                          FFAppState().keepLoggedIn = newValue ?? false;
-                        });
-                      },
-                      controlAffinity: ListTileControlAffinity
-                          .leading, //  <-- leading Checkbox
-                    ),
-                    const Spacer(flex: 2),
-                    FFButtonWidget(
-                      onPressed: () async {
-                        await _getLocation().whenComplete(() =>
-                            currentUserLocationValue =
-                                FFAppState().latLngDriver);
-
-                        if (_model.formKey.currentState == null ||
-                            !_model.formKey.currentState!.validate()) {
-                          return;
-                        }
-
-                        FFAppState().update(() {
-                          FFAppState().routeSelected = RouteStruct();
-                          FFAppState().stopInProgress = StopStruct();
-                        });
-
-                        _model.checkCPF10 =
-                            await APIsPigmanGroup.checkCPFCall.call(
-                          cpf: _model.textController.text,
-                        );
-
-                        var cpf =
-                            _model.checkCPF10?.jsonBody['cpf'] ?? '00000000000';
-                        var termsAccepted =
-                            _model.checkCPF10?.jsonBody['termsAccepted'] ??
-                                false;
-
-                        if (cpf != '00000000000') {
-                          setState(() {
-                            FFAppState().cpf = _model.textController.text;
-                            FFAppState().acceptedTermsAndPrivacy =
-                                termsAccepted;
-                          });
-
-                          if (FFAppState().viagemFinalizada) {
-                            context.pushReplacementNamed('viagemConcluida');
-                          } else {
-                            _model.getCurrentRoute =
-                                await APIsPigmanGroup.gETCurrentRouteCall.call(
-                              cpf: FFAppState().cpf,
-                            );
-
-                            if ((_model.getCurrentRoute?.succeeded ?? true)) {
-                              setState(() {
-                                FFAppState().routeSelected =
-                                    APIsPigmanGroup.gETCurrentRouteCall.route(
-                                  (_model.getCurrentRoute?.jsonBody ?? ''),
-                                )!;
-                              });
-
-                              if (FFAppState()
-                                  .routeSelected
-                                  .stops
-                                  .where((e) => !e.isComplete)
-                                  .toList()
-                                  .isNotEmpty) {
-                                setState(() {
-                                  FFAppState().stopInProgress = FFAppState()
-                                      .routeSelected
-                                      .stops
-                                      .where((e) => !e.isComplete)
-                                      .toList()
-                                      .first;
-                                });
-
-                                // setState(() {
-                                //   FFAppState().latLngDriver = currentUserLocationValue;
-                                // });
-                              } else {
-                                setState(() {
-                                  FFAppState().stopInProgress =
-                                      FFAppState().routeSelected.stops.last;
-                                });
-                              }
-
-                              context.pushReplacementNamed('home');
-                            } else {
-                              _model.getNextRoute =
-                                  await APIsPigmanGroup.getNextRouteCall.call(
-                                cpf: FFAppState().cpf,
-                              );
-
-                              if ((_model.getNextRoute?.succeeded ?? true)) {
-                                setState(() {
-                                  FFAppState().routeSelected =
-                                      APIsPigmanGroup.getNextRouteCall.rota(
-                                    (_model.getNextRoute?.jsonBody ?? ''),
-                                  )!;
-                                });
-
-                                setState(() {
-                                  FFAppState().latLngDriver =
-                                      currentUserLocationValue;
-                                });
-                              }
-
-                              context.pushReplacementNamed('home');
-                            }
-                          }
-                        } else {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: const Text(
-                                'Erro de autenticação, seu cpf não está cadastrado na nossa base de dados.',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                ),
-                              ),
-                              duration: const Duration(milliseconds: 4000),
-                              backgroundColor:
-                                  FlutterFlowTheme.of(context).error,
-                            ),
-                          );
-                        }
-                        setState(() {});
-                      },
-                      text: 'Entrar',
-                      options: FFButtonOptions(
-                        width: 280.0,
-                        height: 48.0,
-                        padding: const EdgeInsetsDirectional.fromSTEB(
-                            24.0, 0.0, 24.0, 0.0),
-                        iconPadding: const EdgeInsetsDirectional.fromSTEB(
-                            0.0, 0.0, 0.0, 0.0),
-                        color: const Color(0xFF2D2D6B),
-                        textStyle:
-                            FlutterFlowTheme.of(context).titleSmall.override(
-                                  fontFamily: 'Poppins',
-                                  color: Colors.white,
-                                ),
-                        elevation: 3.0,
-                        borderSide: const BorderSide(
-                          color: Colors.transparent,
-                          width: 1.0,
-                        ),
-                        borderRadius: BorderRadius.circular(8.0),
-                      ),
-                    ),
-                    const Text("v2.1.1", // Version Code
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Colors.grey,
-                        )),
-                  ],
+                    ],
+                  ),
                 ),
               ),
-            ),
+
+              // Indicador de problemas de localização
+              if (hasLocationIssues)
+                Positioned.fill(
+                  child: Container(
+                    color: Colors.black54,
+                    child: Center(
+                      child: AlertDialog(
+                        title: const Text('Problema de Localização'),
+                        content: const Text(
+                          'Não foi possível obter sua localização. '
+                          'Verifique se o GPS está ativo e as permissões foram concedidas.',
+                        ),
+                        actions: [
+                          TextButton(
+                            onPressed: () async {
+                              await _getLocation();
+                            },
+                            child: const Text('Tentar Novamente'),
+                          ),
+                          TextButton(
+                            onPressed: () {
+                              // Abrir configurações do sistema
+                              Geolocator.openAppSettings();
+                            },
+                            child: const Text('Abrir Configurações'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+            ],
           ),
-        ],
+        ),
       ),
     );
-    // }
   }
 }

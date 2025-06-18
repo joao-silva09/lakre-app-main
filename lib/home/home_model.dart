@@ -17,11 +17,22 @@ class HomeModel extends FlutterFlowModel<HomeWidget> {
   void updateSelectRouteStruct(Function(RouteStruct) updateFn) =>
       updateFn(selectRoute ??= RouteStruct());
 
+  // Navigation state
+  bool routeBuilt = false;
+  bool isNavigating = false;
+  bool isMultipleStop = false;
+  String instruction = '';
+  double? distanceRemaining;
+  double? durationRemaining;
+
   ///  State fields for stateful widgets in this page.
 
   final unfocusNode = FocusNode();
+
   // Stores action output result for [Backend Call - API (Get Next Route)] action in home widget.
   late SemViagemModel semViagemModel;
+
+  // API Call results
   ApiCallResponse? enviarLocalizacao1;
   // Stores action output result for [Backend Call - API (Complete Route Stop)] action in Button widget.
   ApiCallResponse? encerrarRota1;
@@ -41,6 +52,7 @@ class HomeModel extends FlutterFlowModel<HomeWidget> {
   ApiCallResponse? apiResultg02;
   // Stores action output result for [Backend Call - API (GET Current Route)] action in Button widget.
   ApiCallResponse? getCurrentRoute;
+  ApiCallResponse? makePosition;
 
   /// Initialization and disposal methods.
 
