@@ -355,6 +355,67 @@ class _HomeWidgetState extends State<HomeWidget> {
     }
   }
 
+  void postRoute(bool isFinished) async {
+    connectivityResult = await Connectivity().checkConnectivity();
+
+    if (connectivityResult.any((result) =>
+        result == ConnectivityResult.mobile ||
+        result == ConnectivityResult.wifi ||
+        result == ConnectivityResult.ethernet)) {
+      if (FFAppState().positions.isNotEmpty) {
+        _model.positionsRouteCall =
+            await APIsPigmanGroup.positionsRouteCall.call(
+          positionsList: FFAppState().positions,
+        );
+
+        if ((_model.positionsRouteCall?.succeeded ?? true)) {
+          debugPrint('✅ Posições enviadas para API via foreground');
+          setState(() {
+            FFAppState().positions = [];
+          });
+        }
+      }
+    }
+  }
+
+  Future<void> concluirViagem() async {
+    try {
+      debugPrint('🏁 Iniciando conclusão da viagem');
+
+      // Parar o background service
+      final backgroundService = BackgroundLocationService();
+      await backgroundService.stopLocationUpdates();
+
+      // Cancelar timers locais
+      _locationTimer?.cancel();
+
+      // Obter localização final
+      await _getLocation();
+
+      if (latitude != null && longitude != null) {
+        setState(() {
+          FFAppState().addToPositions(PositionsStruct(
+            cpf: FFAppState().cpf,
+            routeId: FFAppState().routeSelected.routeId,
+            latitude: latitude,
+            longitude: longitude,
+            date: DateTime.now()
+                .subtract(DateTime.now().timeZoneOffset)
+                .subtract(const Duration(hours: 3)),
+            finish: true, // Marcando como finalizada
+          ));
+        });
+
+        // Enviar posição final
+        postRoute(true);
+      }
+
+      debugPrint('✅ Viagem concluída');
+    } catch (e) {
+      debugPrint('❌ Erro ao concluir viagem: $e');
+    }
+  }
+
   // Mostrar aviso sobre otimização de bateria
   void _showBatteryOptimizationWarning() {
     if (!mounted) return;
@@ -2210,71 +2271,33 @@ class _HomeWidgetState extends State<HomeWidget> {
                     ],
                   ),
                 ),
+                if (hasLocationIssues)
+                  Positioned.fill(
+                    child: Container(
+                      color: Colors.black54,
+                      child: Center(
+                        child: AlertDialog(
+                          title: const Text('Problema de Localização'),
+                          content: const Text(
+                            'Não foi possível obter sua localização. '
+                            'Verifique se o GPS está ativo e as permissões foram concedidas.',
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () async {
+                                await _getLocation();
+                              },
+                              child: const Text('Tentar Novamente'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
               ],
             )),
       ),
     );
-  }
-
-  void postRoute(bool isFinished) async {
-    connectivityResult = await Connectivity().checkConnectivity();
-
-    if (connectivityResult.any((result) =>
-        result == ConnectivityResult.mobile ||
-        result == ConnectivityResult.wifi ||
-        result == ConnectivityResult.ethernet)) {
-      if (FFAppState().positions.isNotEmpty) {
-        _model.positionsRouteCall =
-            await APIsPigmanGroup.positionsRouteCall.call(
-          positionsList: FFAppState().positions,
-        );
-
-        if ((_model.positionsRouteCall?.succeeded ?? true)) {
-          debugPrint('✅ Posições enviadas para API via foreground');
-          setState(() {
-            FFAppState().positions = [];
-          });
-        }
-      }
-    }
-  }
-
-  Future<void> concluirViagem() async {
-    try {
-      debugPrint('🏁 Iniciando conclusão da viagem');
-
-      // Parar o background service
-      final backgroundService = BackgroundLocationService();
-      await backgroundService.stopLocationUpdates();
-
-      // Cancelar timers locais
-      _locationTimer?.cancel();
-
-      // Obter localização final
-      await _getLocation();
-
-      if (latitude != null && longitude != null) {
-        setState(() {
-          FFAppState().addToPositions(PositionsStruct(
-            cpf: FFAppState().cpf,
-            routeId: FFAppState().routeSelected.routeId,
-            latitude: latitude,
-            longitude: longitude,
-            date: DateTime.now()
-                .subtract(DateTime.now().timeZoneOffset)
-                .subtract(const Duration(hours: 3)),
-            finish: true, // Marcando como finalizada
-          ));
-        });
-
-        // Enviar posição final
-        postRoute(true);
-      }
-
-      debugPrint('✅ Viagem concluída');
-    } catch (e) {
-      debugPrint('❌ Erro ao concluir viagem: $e');
-    }
   }
 
   dynamic openWhatsAppChatWithCurrentCompany() async {

@@ -1,5 +1,3 @@
-// lib/services/background_service.dart
-
 import 'dart:async';
 import 'dart:ui';
 import 'dart:convert';
@@ -11,7 +9,6 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_background_service_android/flutter_background_service_android.dart';
 import 'package:flutter_background_service_ios/flutter_background_service_ios.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:pigma/services/battery_optimization_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
@@ -19,6 +16,7 @@ import 'package:pigma/backend/schema/structs/positions_struct.dart';
 import 'package:pigma/flutter_flow/flutter_flow_util.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:intl/date_symbol_data_local.dart';
+import 'package:permission_handler/permission_handler.dart' as perm;
 
 /// Serviço de localização em background usando apenas Geolocator
 ///
@@ -79,10 +77,10 @@ class BackgroundLocationService {
 
       // Para iOS, verificar permissões específicas de background
       if (Platform.isIOS) {
-        var locationAlways = await permission.Permission.locationAlways.status;
-        if (locationAlways != permission.PermissionStatus.granted) {
-          locationAlways = await permission.Permission.locationAlways.request();
-          if (locationAlways != permission.PermissionStatus.granted) {
+        var locationAlways = await perm.Permission.locationAlways.status;
+        if (locationAlways != perm.PermissionStatus.granted) {
+          locationAlways = await perm.Permission.locationAlways.request();
+          if (locationAlways != perm.PermissionStatus.granted) {
             debugPrint(
                 '❌ Permissão de localização em segundo plano não concedida no iOS');
             return false;
@@ -90,9 +88,9 @@ class BackgroundLocationService {
         }
 
         // Verificar notificações para iOS
-        var notification = await permission.Permission.notification.status;
-        if (notification != permission.PermissionStatus.granted) {
-          notification = await permission.Permission.notification.request();
+        var notification = await perm.Permission.notification.status;
+        if (notification != perm.PermissionStatus.granted) {
+          notification = await perm.Permission.notification.request();
         }
 
         debugPrint('✅ Permissões de localização iOS configuradas');
