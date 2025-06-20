@@ -22,6 +22,7 @@ import 'package:geolocator_android/geolocator_android.dart';
 import 'package:geolocator_apple/geolocator_apple.dart';
 import 'package:intl/date_symbol_data_local.dart';
 import 'package:permission_handler/permission_handler.dart' as permission;
+import 'package:pigma/services/location_permission_service.dart';
 
 class BackgroundLocationService {
   static BackgroundLocationService? _instance;
@@ -177,54 +178,123 @@ class BackgroundLocationService {
 
   Future<bool> checkAndRequestPermissions() async {
     try {
-      if (Platform.isIOS) {
-        // Requisições de permissão específicas para iOS
-        var locationAlways = await permission.Permission.locationAlways.status;
-        if (locationAlways != permission.PermissionStatus.granted) {
-          debugPrint(
-              '🔶 Solicitando permissão de localização sempre ativa no iOS');
+      debugPrint('🔍 Verificando permissões de localização...');
 
-          // Primeiro pedimos a permissão de uso enquanto o app está em uso
-          var locationWhenInUse =
-              await permission.Permission.locationWhenInUse.request();
-          if (locationWhenInUse != permission.PermissionStatus.granted) {
-            debugPrint(
-                '❌ Permissão de localização durante uso não concedida no iOS');
-            return false;
-          }
+      // NOVA ABORDAGEM: Usar o LocationPermissionService para verificação robusta
+      final hasCorrectPermissions =
+          await LocationPermissionService.hasCorrectLocationPermissions();
 
-          // Depois pedimos a permissão de uso em segundo plano ("always")
-          locationAlways = await permission.Permission.locationAlways.request();
+      if (!hasCorrectPermissions) {
+        debugPrint(
+            '❌ Permissões de localização inadequadas, tentando solicitar...');
+
+        if (Platform.isIOS) {
+          // iOS - usar o fluxo específico existente
+          var locationAlways =
+              await permission.Permission.locationAlways.status;
           if (locationAlways != permission.PermissionStatus.granted) {
             debugPrint(
-                '❌ Permissão de localização em segundo plano não concedida no iOS');
+                '🔶 Solicitando permissão de localização sempre ativa no iOS');
+
+            // Primeiro pedimos a permissão de uso enquanto o app está em uso
+            var locationWhenInUse =
+                await permission.Permission.locationWhenInUse.request();
+            if (locationWhenInUse != permission.PermissionStatus.granted) {
+              debugPrint(
+                  '❌ Permissão de localização durante uso não concedida no iOS');
+              return false;
+            }
+
+            // Depois pedimos a permissão de uso em segundo plano ("always")
+            locationAlways =
+                await permission.Permission.locationAlways.request();
+            if (locationAlways != permission.PermissionStatus.granted) {
+              debugPrint(
+                  '❌ Permissão de localização em segundo plano não concedida no iOS');
+              return false;
+            }
+          }
+
+          // Verificar também notificações
+          var notification = await permission.Permission.notification.status;
+          if (notification != permission.PermissionStatus.granted) {
+            notification = await permission.Permission.notification.request();
+          }
+
+          debugPrint('🔷 Permissões de localização iOS: $locationAlways');
+        } else {
+          // Android - usar a verificação mais robusta do Geolocator + permission_handler
+          bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+          if (!serviceEnabled) {
+            debugPrint('❌ Serviço de localização não habilitado no Android');
             return false;
           }
-        }
 
-        // Verificar também notificações
-        var notification = await permission.Permission.notification.status;
-        if (notification != permission.PermissionStatus.granted) {
-          notification = await permission.Permission.notification.request();
-        }
+          // Verificar primeiro com Geolocator (compatibilidade)
+          LocationPermission geoPermission = await Geolocator.checkPermission();
+          if (geoPermission == LocationPermission.denied) {
+            geoPermission = await Geolocator.requestPermission();
+            if (geoPermission == LocationPermission.denied) {
+              debugPrint(
+                  '❌ Permissão básica de localização negada (Geolocator)');
+              return false;
+            }
+          }
 
-        debugPrint('🔷 Permissões de localização iOS: $locationAlways');
-      } else {
-        // Código existente para Android
-        bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
-        if (!serviceEnabled) {
-          return false;
-        }
-
-        LocationPermission permission = await Geolocator.checkPermission();
-        if (permission == LocationPermission.denied) {
-          permission = await Geolocator.requestPermission();
-          if (permission == LocationPermission.denied) {
+          if (geoPermission == LocationPermission.deniedForever) {
+            debugPrint(
+                '❌ Permissão de localização negada permanentemente (Geolocator)');
             return false;
           }
+
+          // NOVA VERIFICAÇÃO: Tentar solicitar permissão "sempre ativa" com permission_handler
+          var locationWhenInUse =
+              await permission.Permission.locationWhenInUse.status;
+          if (locationWhenInUse != permission.PermissionStatus.granted) {
+            debugPrint(
+                '🔶 Solicitando permissão de localização durante uso (Android)');
+            locationWhenInUse =
+                await permission.Permission.locationWhenInUse.request();
+
+            if (locationWhenInUse != permission.PermissionStatus.granted) {
+              debugPrint('❌ Permissão durante uso não concedida (Android)');
+              return false;
+            }
+          }
+
+          // Aguardar um pouco antes de solicitar a permissão "sempre ativa"
+          await Future.delayed(const Duration(milliseconds: 500));
+
+          // Tentar solicitar permissão "sempre ativa"
+          var locationAlways =
+              await permission.Permission.locationAlways.status;
+          if (locationAlways != permission.PermissionStatus.granted) {
+            debugPrint(
+                '🔶 Solicitando permissão de localização sempre ativa (Android)');
+            locationAlways =
+                await permission.Permission.locationAlways.request();
+
+            if (locationAlways != permission.PermissionStatus.granted) {
+              debugPrint(
+                  '⚠️ Permissão "sempre ativa" não concedida - pode afetar background');
+              // Não falhar aqui, pois alguns dispositivos podem funcionar mesmo assim
+            } else {
+              debugPrint('✅ Permissão "sempre ativa" concedida (Android)');
+            }
+          }
+
+          debugPrint('🔷 Status final das permissões Android:');
+          debugPrint('  - Serviço habilitado: $serviceEnabled');
+          debugPrint('  - Geolocator: $geoPermission');
+          debugPrint('  - Durante uso: $locationWhenInUse');
+          debugPrint('  - Sempre ativa: $locationAlways');
         }
 
-        if (permission == LocationPermission.deniedForever) {
+        // VERIFICAR NOVAMENTE com o serviço após as solicitações
+        final recheckPermissions =
+            await LocationPermissionService.hasCorrectLocationPermissions();
+        if (!recheckPermissions) {
+          debugPrint('❌ Permissões ainda inadequadas após tentativas');
           return false;
         }
       }
@@ -234,11 +304,32 @@ class BackgroundLocationService {
       bool backgroundEnabled = await location.isBackgroundModeEnabled();
       if (!backgroundEnabled) {
         backgroundEnabled = await location.enableBackgroundMode(enable: true);
+        debugPrint('🔷 Background mode habilitado: $backgroundEnabled');
+      }
+
+      // VERIFICAÇÃO FINAL usando o serviço
+      final finalCheck =
+          await LocationPermissionService.hasCorrectLocationPermissions();
+      if (finalCheck) {
+        debugPrint(
+            '✅ Todas as permissões de localização verificadas e aprovadas');
+      } else {
+        debugPrint('⚠️ Permissões podem estar inadequadas, mas prosseguindo');
       }
 
       return true;
     } catch (e) {
       debugPrint('❌ Erro ao verificar permissões: $e');
+
+      // Log detalhado do erro para debug
+      try {
+        final permissionDetails =
+            await LocationPermissionService.getLocationPermissionDetails();
+        debugPrint('🔍 Detalhes das permissões no erro: $permissionDetails');
+      } catch (detailError) {
+        debugPrint('❌ Erro ao obter detalhes das permissões: $detailError');
+      }
+
       return false;
     }
   }
@@ -711,8 +802,33 @@ class BackgroundLocationService {
       // Verificar permissões antes de iniciar
       final permissionsGranted = await checkAndRequestPermissions();
       if (!permissionsGranted) {
-        debugPrint('❌ Permissões não concedidas');
-        return false;
+        debugPrint('❌ Permissões básicas não concedidas');
+
+        // Se contexto for fornecido, tentar usar o LocationPermissionService
+        if (context != null) {
+          debugPrint(
+              '🔄 Tentando solicitar permissões via LocationPermissionService...');
+          final serviceResult =
+              await LocationPermissionService.requestLocationPermissions(
+                  context);
+
+          if (!serviceResult) {
+            debugPrint(
+                '❌ LocationPermissionService não conseguiu obter permissões');
+            return false;
+          }
+
+          // Verificar novamente após tentativa via serviço
+          final recheckPermissions = await checkAndRequestPermissions();
+          if (!recheckPermissions) {
+            debugPrint(
+                '❌ Permissões ainda inadequadas após LocationPermissionService');
+            return false;
+          }
+        } else {
+          debugPrint('❌ Contexto não fornecido e permissões inadequadas');
+          return false;
+        }
       }
 
       // Verificar permissões de bateria se o contexto for fornecido
@@ -732,6 +848,19 @@ class BackgroundLocationService {
           debugPrint(
               '⚠️ Otimização de bateria ativa - serviço pode ser interrompido pelo sistema');
         }
+      }
+
+      // LOG DO STATUS COMPLETO antes de iniciar
+      try {
+        final systemStatus = await getDetailedSystemStatus();
+        debugPrint('📊 Status do sistema antes de iniciar serviço:');
+        debugPrint(
+            '  - Localização correta: ${systemStatus['locationPermissionsCorrect']}');
+        debugPrint(
+            '  - Bateria otimizada: ${systemStatus['batteryOptimizationDisabled']}');
+        debugPrint('  - Recomendação: ${systemStatus['systemRecommendation']}');
+      } catch (e) {
+        debugPrint('⚠️ Erro ao obter status do sistema: $e');
       }
 
       // Salvar parâmetros
@@ -766,6 +895,14 @@ class BackgroundLocationService {
       // Iniciar o serviço
       final serviceStarted = await _service.startService();
       debugPrint('▶️ Serviço iniciado com sucesso: $serviceStarted');
+
+      if (serviceStarted) {
+        // Log de confirmação com timestamp
+        debugPrint('✅ BackgroundLocationService iniciado às ${DateTime.now()}');
+        debugPrint(
+            '✅ Parâmetros: CPF=$cpf, RouteId=$routeId, FinishViagem=$finishViagem');
+      }
+
       return serviceStarted;
     } catch (e) {
       debugPrint('❌ Erro ao iniciar serviço: $e');
@@ -794,21 +931,49 @@ class BackgroundLocationService {
       final canIgnore =
           await BatteryOptimizationService.canIgnoreBatteryOptimizations();
 
+      // NOVO: Verificar permissões de localização
+      final locationPermissions =
+          await LocationPermissionService.getLocationPermissionDetails();
+      final hasCorrectLocationPermissions =
+          await LocationPermissionService.hasCorrectLocationPermissions();
+
       return {
         ...basicStats,
         'batteryOptimizationDisabled': batteryOptimized,
         'canIgnoreBatteryOptimizations': canIgnore,
-        'systemRecommendation': batteryOptimized
-            ? 'Sistema configurado corretamente'
-            : 'Recomendado desabilitar otimização de bateria',
+        'locationPermissionsCorrect': hasCorrectLocationPermissions,
+        'locationPermissionDetails': locationPermissions,
+        'systemRecommendation': _getSystemRecommendation(
+            batteryOptimized, hasCorrectLocationPermissions),
+        'detailedStatus': {
+          'batteryConfigured': batteryOptimized,
+          'locationConfigured': hasCorrectLocationPermissions,
+          'overallHealth': batteryOptimized && hasCorrectLocationPermissions
+              ? 'excellent'
+              : 'needs_attention',
+        }
       };
     } catch (e) {
       return {
         ...basicStats,
         'batteryOptimizationDisabled': 'unknown',
-        'batteryCheckError': e.toString(),
+        'locationPermissionsCorrect': 'unknown',
+        'systemCheckError': e.toString(),
       };
     }
+  }
+
+  String _getSystemRecommendation(bool batteryOptimized, bool locationCorrect) {
+    if (batteryOptimized && locationCorrect) {
+      return 'Sistema configurado corretamente para funcionamento em segundo plano';
+    } else if (!batteryOptimized && !locationCorrect) {
+      return 'Configure bateria e permissões de localização para melhor funcionamento';
+    } else if (!batteryOptimized) {
+      return 'Recomendado desabilitar otimização de bateria';
+    } else if (!locationCorrect) {
+      return 'Configure permissões de localização para "o tempo todo"';
+    }
+    return 'Verificação de sistema incompleta';
   }
 
   Future<bool> stopLocationUpdates() async {

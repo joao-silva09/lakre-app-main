@@ -24,6 +24,7 @@ import 'package:location/location.dart';
 import 'package:pigma/services/battery_optimization_service.dart';
 import '../services/background_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:pigma/services/location_permission_service.dart';
 
 class HomeWidget extends StatefulWidget {
   const HomeWidget({
@@ -58,6 +59,7 @@ class _HomeWidgetState extends State<HomeWidget> {
   final scaffoldKey = GlobalKey<ScaffoldState>();
   LatLng? currentUserLocationValue;
 
+  bool _locationCheckPerformed = false;
   Timer? _foregroundHeartbeatTimer;
 
   bool _batteryCheckPerformed = false;
@@ -101,6 +103,10 @@ class _HomeWidgetState extends State<HomeWidget> {
     Timer(const Duration(seconds: 3), () async {
       if (!_batteryCheckPerformed && mounted) {
         await _performBatteryCheck();
+      }
+
+      if (!_locationCheckPerformed && mounted) {
+        await _performLocationPermissionCheck();
       }
     });
 
@@ -412,9 +418,278 @@ class _HomeWidgetState extends State<HomeWidget> {
         false;
   }
 
+  Future<void> _performLocationPermissionCheck() async {
+    if (!mounted) return;
+
+    _locationCheckPerformed = true;
+
+    try {
+      final hasCorrectPermissions =
+          await LocationPermissionService.hasCorrectLocationPermissions();
+
+      if (!hasCorrectPermissions) {
+        debugPrint(
+            '⚠️ Permissões de localização inadequadas - mostrando aviso');
+
+        // Mostrar aviso discreto após um pequeno delay
+        if (mounted) {
+          Timer(const Duration(seconds: 2), () {
+            if (mounted) {
+              _showLocationPermissionWarning();
+            }
+          });
+        }
+      } else {
+        debugPrint('✅ Permissões de localização adequadas');
+      }
+    } catch (e) {
+      debugPrint('⚠️ Erro ao verificar permissões de localização: $e');
+    }
+  }
+
+  void _showLocationPermissionWarning() {
+    if (!mounted) return;
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: const Row(
+          children: [
+            Icon(Icons.location_off, color: Colors.white, size: 20),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Configure localização "o tempo todo" para rastreamento em segundo plano',
+                style: TextStyle(fontSize: 14),
+              ),
+            ),
+          ],
+        ),
+        action: SnackBarAction(
+          label: 'Configurar',
+          textColor: Colors.white,
+          onPressed: () async {
+            await LocationPermissionService.requestLocationPermissions(context);
+          },
+        ),
+        duration: const Duration(seconds: 8),
+        backgroundColor: Colors.orange.shade700,
+      ),
+    );
+  }
+
+  Future<bool> _showLocationConfigurationDialog() async {
+    return await showDialog<bool>(
+          context: context,
+          barrierDismissible: false,
+          builder: (BuildContext context) {
+            return AlertDialog(
+              title: const Row(
+                children: [
+                  Icon(Icons.location_on, color: Colors.orange),
+                  SizedBox(width: 8),
+                  Text('Configuração de Localização'),
+                ],
+              ),
+              content: const SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Para que o rastreamento funcione perfeitamente em segundo plano, '
+                      'é necessário configurar a permissão de localização.',
+                      style: TextStyle(fontSize: 16),
+                    ),
+                    SizedBox(height: 16),
+                    Text(
+                      '⚠️ Sem essa configuração, o aplicativo pode parar de rastrear '
+                      'quando estiver em segundo plano.',
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: Colors.red,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(true),
+                  child: const Text('Pular por Agora'),
+                ),
+                ElevatedButton(
+                  onPressed: () async {
+                    Navigator.of(context).pop(false);
+
+                    // Solicitar configuração de localização
+                    final configured = await LocationPermissionService
+                        .requestLocationPermissions(context);
+
+                    if (configured && mounted) {
+                      // Se configurou com sucesso, iniciar a viagem automaticamente
+                      Timer(const Duration(seconds: 1), () {
+                        if (mounted) {
+                          _startTrip();
+                        }
+                      });
+                    }
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF4646B4),
+                    foregroundColor: Colors.white,
+                  ),
+                  child: const Text('Configurar Agora'),
+                ),
+              ],
+            );
+          },
+        ) ??
+        false;
+  }
+
+  Widget _buildLocationStatusIndicator() {
+    return FutureBuilder<bool>(
+      future: LocationPermissionService.hasCorrectLocationPermissions(),
+      builder: (context, snapshot) {
+        if (!snapshot.hasData) {
+          return const SizedBox.shrink();
+        }
+
+        final hasCorrectPermissions = snapshot.data ?? false;
+
+        return Padding(
+          padding: const EdgeInsets.only(right: 8.0),
+          child: InkWell(
+            splashColor: Colors.transparent,
+            focusColor: Colors.transparent,
+            hoverColor: Colors.transparent,
+            highlightColor: Colors.transparent,
+            onTap: () async {
+              if (!hasCorrectPermissions) {
+                await LocationPermissionService.requestLocationPermissions(
+                    context);
+                setState(() {}); // Rebuild para atualizar o indicador
+              } else {
+                _showLocationStatusDialog(hasCorrectPermissions);
+              }
+            },
+            child: Icon(
+              hasCorrectPermissions ? Icons.location_on : Icons.location_off,
+              color: hasCorrectPermissions ? Colors.green : Colors.orange,
+              size: 28.0,
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _showLocationStatusDialog(bool hasCorrectPermissions) {
+    showDialog(
+      context: context,
+      builder: (BuildContext context) {
+        return AlertDialog(
+          title: Row(
+            children: [
+              Icon(
+                hasCorrectPermissions ? Icons.location_on : Icons.location_off,
+                color: hasCorrectPermissions ? Colors.green : Colors.orange,
+              ),
+              const SizedBox(width: 8),
+              const Text('Status da Localização'),
+            ],
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                hasCorrectPermissions
+                    ? '✅ Permissões configuradas corretamente para segundo plano'
+                    : '⚠️ Permissões inadequadas para funcionamento em segundo plano',
+                style: TextStyle(
+                  fontSize: 16,
+                  color: hasCorrectPermissions ? Colors.green : Colors.orange,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const SizedBox(height: 16),
+              if (!hasCorrectPermissions) ...[
+                const Text(
+                  'Para melhor funcionamento, configure:\n'
+                  'Configurações > Aplicativos > RotaSys > Permissões > Localização > "Permitir o tempo todo"',
+                  style: TextStyle(fontSize: 14),
+                ),
+              ] else ...[
+                const Text(
+                  'O aplicativo está configurado corretamente para rastrear localização '
+                  'em segundo plano sem interrupções.',
+                  style: TextStyle(fontSize: 14),
+                ),
+              ],
+            ],
+          ),
+          actions: [
+            if (!hasCorrectPermissions) ...[
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('Entendi'),
+              ),
+              ElevatedButton(
+                onPressed: () async {
+                  Navigator.of(context).pop();
+                  await LocationPermissionService.requestLocationPermissions(
+                      context);
+                  setState(() {}); // Rebuild para atualizar
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4646B4),
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('Configurar'),
+              ),
+            ] else ...[
+              ElevatedButton(
+                onPressed: () => Navigator.of(context).pop(),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.green,
+                  foregroundColor: Colors.white,
+                ),
+                child: const Text('OK'),
+              ),
+            ],
+          ],
+        );
+      },
+    );
+  }
+
   // Iniciar viagem (extraída para reutilização)
   Future<void> _startTrip() async {
     try {
+      // Verificar permissões de localização antes de iniciar
+      final locationConfigured =
+          await LocationPermissionService.hasCorrectLocationPermissions();
+      if (!locationConfigured) {
+        // Mostrar dialog de configuração de localização
+        final shouldProceed = await _showLocationConfigurationDialog();
+        if (!shouldProceed) {
+          return; // Usuário cancelou
+        }
+      }
+
+      // Verificar configurações de bateria antes de iniciar a viagem
+      final batteryConfigured =
+          await BatteryOptimizationService.isBatteryOptimizationDisabled();
+      if (!batteryConfigured) {
+        // Mostrar dialog de configuração de bateria
+        final shouldProceed = await _showBatteryConfigurationDialog();
+        if (!shouldProceed) {
+          return; // Usuário cancelou
+        }
+      }
+
       _model.apiResult7s3 = await APIsPigmanGroup.acceptRouteCall.call(
         cpf: FFAppState().cpf,
         routeId: FFAppState().routeSelected.routeId,
@@ -677,6 +952,7 @@ class _HomeWidgetState extends State<HomeWidget> {
                           child: Row(
                             mainAxisSize: MainAxisSize.max,
                             children: [
+                              _buildLocationStatusIndicator(),
                               _buildBatteryStatusIndicator(),
                               Padding(
                                 padding: const EdgeInsets.only(right: 16.0),
