@@ -23,6 +23,7 @@ import 'package:flutter_mapbox_navigation/flutter_mapbox_navigation.dart';
 import 'package:location/location.dart';
 import 'package:pigma/services/battery_optimization_service.dart';
 import '../services/background_service.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class HomeWidget extends StatefulWidget {
   const HomeWidget({
@@ -56,6 +57,8 @@ class _HomeWidgetState extends State<HomeWidget> {
 
   final scaffoldKey = GlobalKey<ScaffoldState>();
   LatLng? currentUserLocationValue;
+
+  Timer? _foregroundHeartbeatTimer;
 
   bool _batteryCheckPerformed = false;
 
@@ -91,6 +94,8 @@ class _HomeWidgetState extends State<HomeWidget> {
     _model = createModel(context, () => HomeModel());
 
     location.enableBackgroundMode(enable: true);
+
+    _startForegroundHeartbeat();
 
     // Verificar permissões de bateria após a inicialização
     Timer(const Duration(seconds: 3), () async {
@@ -164,28 +169,55 @@ class _HomeWidgetState extends State<HomeWidget> {
               (latitude!.truncate() != 0 && longitude!.truncate() != 0)) {
             savedTime = DateTime.now();
 
-            setState(() {
-              FFAppState().addToPositions(PositionsStruct(
-                cpf: FFAppState().cpf,
-                routeId: FFAppState().routeSelected.routeId,
-                latitude: FFAppState().latLngDriver?.latitude,
-                longitude: FFAppState().latLngDriver?.longitude,
-                date: DateTime.now()
-                    .subtract(DateTime.now().timeZoneOffset)
-                    .subtract(const Duration(hours: 3)),
-                finish: false,
-              ));
-            });
-          }
+            // VERIFICAR se background service está ativo ANTES de adicionar
+            final backgroundService = BackgroundLocationService();
+            final isBackgroundActive = await backgroundService.isRunning();
 
-          // else {
-          //   await Future.delayed(const Duration(milliseconds: 10000));
-          // }
+            if (!isBackgroundActive) {
+              // SÓ ADICIONAR se background NÃO estiver ativo
+              setState(() {
+                FFAppState().addToPositions(PositionsStruct(
+                  cpf: FFAppState().cpf,
+                  routeId: FFAppState().routeSelected.routeId,
+                  latitude: FFAppState().latLngDriver?.latitude,
+                  longitude: FFAppState().latLngDriver?.longitude,
+                  date: DateTime.now()
+                      .subtract(DateTime.now().timeZoneOffset)
+                      .subtract(const Duration(hours: 3)),
+                  finish: false,
+                ));
+              });
+              debugPrint(
+                  '📍 Posição adicionada ao estado (background inativo)');
+            } else {
+              debugPrint(
+                  '⏭️ Background ativo - não adicionando ao estado local');
+            }
+          }
         }
 
         if ((differenceInSeconds % 60) == 0) {
-          //Verificar se está com rede para realizar chamada para API
-          postRoute(false);
+          final backgroundService = BackgroundLocationService();
+          final isBackgroundActive = await backgroundService.isRunning();
+
+          debugPrint('🔍 Background service ativo: $isBackgroundActive');
+
+          // SÓ ENVIAR se background service NÃO estiver ativo
+          if (!isBackgroundActive) {
+            //Verificar se está com rede para realizar chamada para API
+            postRoute(false);
+            debugPrint('📤 Enviando via foreground (background inativo)');
+          } else {
+            // Se background ESTÁ ativo, apenas limpar posições pendentes se houver
+            if (FFAppState().positions.isNotEmpty) {
+              debugPrint(
+                  '🧹 Background ativo - limpando ${FFAppState().positions.length} posições pendentes');
+              setState(() {
+                FFAppState().positions = [];
+              });
+            }
+            debugPrint('⏭️ Background ativo - não enviando via foreground');
+          }
           setState(() {});
         } else if ((differenceInSeconds % 10) == 0) {
           connectivityResult = await Connectivity().checkConnectivity();
@@ -201,6 +233,8 @@ class _HomeWidgetState extends State<HomeWidget> {
     _controller?.dispose();
 
     _model.dispose();
+
+    _foregroundHeartbeatTimer?.cancel();
 
     super.dispose();
   }
@@ -564,6 +598,30 @@ class _HomeWidgetState extends State<HomeWidget> {
     );
   }
 
+  void _startForegroundHeartbeat() {
+    _foregroundHeartbeatTimer =
+        Timer.periodic(const Duration(seconds: 30), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+
+      // Atualizar timestamp de atividade do foreground
+      _updateForegroundActivity();
+    });
+  }
+
+  Future<void> _updateForegroundActivity() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(
+          'last_foreground_activity', DateTime.now().millisecondsSinceEpoch);
+      debugPrint('💓 Foreground ativo - timestamp atualizado');
+    } catch (e) {
+      debugPrint('❌ Erro ao atualizar timestamp foreground: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     context.watch<FFAppState>();
@@ -767,7 +825,7 @@ class _HomeWidgetState extends State<HomeWidget> {
                                       key: const Key("mapStatic"),
                                       onCreated: (MapBoxNavigationViewController
                                           controller) async {
-                                        _controller = controller;
+                                        // _controller = controller;
                                         _model.menu = true;
 
                                         // await _getLocation();

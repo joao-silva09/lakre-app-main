@@ -1043,6 +1043,36 @@ class BackgroundLocationService {
         debugPrint(
             '🟢 Atualizações bem-sucedidas: $successfulLocationUpdates de $executionCount (${(successfulLocationUpdates / executionCount * 100).toStringAsFixed(1)}%)');
 
+        // NOVA VERIFICAÇÃO: Verificar se foreground está ativo
+        final prefs = await SharedPreferences.getInstance();
+        final lastForegroundActivity =
+            prefs.getInt('last_foreground_activity') ?? 0;
+        final timeSinceLastForeground =
+            now.millisecondsSinceEpoch - lastForegroundActivity;
+
+        // Se foreground foi ativo nos últimos 2 minutos, não processar
+        final foregroundRecentlyActive =
+            timeSinceLastForeground < (2 * 60 * 1000);
+
+        if (foregroundRecentlyActive) {
+          debugPrint(
+              '⏭️ Foreground ativo recentemente - pulando processamento background');
+          debugPrint(
+              '⏭️ Última atividade foreground: ${DateTime.fromMillisecondsSinceEpoch(lastForegroundActivity)}');
+          return;
+        }
+
+        debugPrint(
+            '✅ Foreground inativo há mais de 2 minutos - processando background');
+
+        // Se o serviço não estiver mais em execução, parar o timer
+        if (!isServiceRunning) {
+          debugPrint(
+              '🔴 Serviço marcado como não em execução, cancelando timer');
+          timer.cancel();
+          return;
+        }
+
         // Atualizar SharedPreferences com última execução
         try {
           await prefs.setInt(
@@ -1071,14 +1101,6 @@ class BackgroundLocationService {
           } catch (e) {
             debugPrint('❌ Erro ao atualizar notificação: $e');
           }
-        }
-
-        // Se o serviço não estiver mais em execução, parar o timer
-        if (!isServiceRunning) {
-          debugPrint(
-              '🔴 Serviço marcado como não em execução, cancelando timer');
-          timer.cancel();
-          return;
         }
 
         // Verificar se o rastreamento está ativo
@@ -1149,6 +1171,8 @@ class BackgroundLocationService {
             // Se o envio foi bem-sucedido
             successfulApiSends++;
             await prefs.setInt('bg_successful_api_sends', successfulApiSends);
+            debugPrint(
+                '✅ Localização enviada com sucesso via background (#$successfulApiSends)');
           } else {
             // Se falhou, salvar para sincronização posterior
             await _savePositionForSync(position);
